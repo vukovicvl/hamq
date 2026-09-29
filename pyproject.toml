@@ -1,0 +1,27 @@
+[project]
+name = "hamq"
+version = "0.1.0"
+description = "QGIS plugin for amateur radio operators: Maidenhead locator, QSO log map, DXCC, WSJT-X live"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Vladimir Vuković" }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = ["hamq/resources"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hamq"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/core"]
+pythonpath = ["."]
+addopts = "-ra"
+markers = [
+    "slow: performance / acceptance timing tests",
+]
