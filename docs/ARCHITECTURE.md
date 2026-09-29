@@ -21,7 +21,7 @@ hamq/
   core/                  pure Python 3.9+, no qgis / PyQt imports
     bands.py             band table, band_from_freq, band_sort_key   (done)
     modes.py             display_mode(mode, submode)                  (done)
-    maidenhead.py adif.py geo.py cty.py wsjtx.py qso.py stats.py i18n.py
+    maidenhead.py adif.py geo.py cty.py wsjtx.py qso.py stats.py i18n.py hamlib.py
   i18n/
     sr_Latn/*.json       translation catalogs: English source -> Serbian Latin
   qgis_io/
@@ -35,8 +35,9 @@ hamq/
     alg_locator_to_point.py alg_grid.py alg_import_adif.py alg_recalculate.py
   gui/
     dock.py settings_dialog.py locator_search.py azimuthal.py language.py
+    rotator_tool.py qso_dialog.py
   net/
-    cty_download.py wsjtx_listener.py
+    cty_download.py wsjtx_listener.py hamlib_client.py
   resources/
     icons/*.svg styles/*.qml
 tests/
@@ -410,6 +411,61 @@ def tr_noop(text: str) -> str
 `resolve_language("auto", "sr_RS")` -> `sr_Cyrl`; `"sr@latin"`, `"sr_Latn"`,
 `"sr_Latn_RS"` -> `sr_Latn`; anything else -> `en`. Unknown setting values -> `en`.
 
+### core/hamlib.py (M7)
+
+Hamlib daemons (`rigctld`, `rotctld`) speak a line protocol over TCP. HamQ
+always uses the extended form (`+` prefix). Real Hamlib 4.6.5 responses
+(captured from `rigctld -m 1` / `rotctld -m 1`):
+
+```
++f            -> 'get_freq:\nFrequency: 14074000\nRPRT 0\n'
++m            -> 'get_mode:\nMode: USB\nPassband: 2400\nRPRT 0\n'
++F 14074000   -> 'set_freq: 14074000\nRPRT 0\n'
++M USB 0      -> 'set_mode: USB 0\nRPRT 0\n'
++t            -> 'get_ptt:\nRPRT -11\n'            (feature not available)
++p            -> 'get_pos:\nAzimuth: 123.00\nElevation: 0.00\nRPRT 0\n'
++P 123.5 10   -> 'set_pos: 123.5 10\nRPRT 0\n'
++S            -> 'stop:\nRPRT 0\n'
++X_bogus      -> ''  (NO response at all: the client must time out)
++F abc        -> 'set_split_mode: bogus +F\nRPRT -1\nRPRT -18\nRPRT -1\n'  (stray lines: resync)
+```
+
+```python
+RIG_DEFAULT_PORT, ROT_DEFAULT_PORT = 4532, 4533
+
+@dataclass
+class HamlibResponse:
+    command: str                 # header name ("get_freq", "set_pos", ...), "" when missing
+    args: str                    # echoed text after "name:" on the header line, stripped
+    fields: dict[str, str]       # {"Frequency": "14074000"}
+    rprt: int                    # 0 ok, negative = Hamlib error code
+    @property
+    def ok(self) -> bool
+
+class ResponseParser:            # incremental; tolerates partial lines, CRLF, stray RPRT lines
+    def feed(self, data: bytes | str) -> list[HamlibResponse]
+    def reset(self) -> None
+
+def cmd_get_freq() -> str                    # '+f\n'
+def cmd_set_freq(hz: int) -> str             # '+F 14074000\n'   ValueError if hz <= 0
+def cmd_get_mode() -> str                    # '+m\n'
+def cmd_set_mode(mode: str, passband: int = 0) -> str   # '+M USB 0\n'  ValueError if mode not in MODES
+def cmd_get_pos() -> str                     # '+p\n'
+def cmd_set_pos(azimuth: float, elevation: float = 0.0) -> str   # '+P 123.5 0.0\n'
+def cmd_stop() -> str                        # '+S\n'
+def expected_command(cmd: str) -> str        # '+f\n' -> 'get_freq' (header the reply must carry)
+MODES: tuple[str, ...]                       # Hamlib mode names (USB LSB CW CWR AM FM WFM RTTY RTTYR PKTUSB PKTLSB PKTFM ...)
+def parse_freq(resp: HamlibResponse) -> int | None                # Hz
+def parse_mode(resp: HamlibResponse) -> tuple[str, int] | None    # (mode, passband Hz)
+def parse_pos(resp: HamlibResponse) -> tuple[float, float] | None # (azimuth, elevation)
+def error_message(code: int) -> str          # translated text for Hamlib RPRT codes
+def rotator_target(bearing_deg: float, min_az: float, max_az: float,
+                   current_az: float | None = None) -> float | None
+    # compass bearing -> commandable azimuth inside [min_az, max_az]; for ranges wider
+    # than 360 (0..450, -180..180, 180..540) pick the equivalent closest to current_az;
+    # None when the bearing is unreachable (e.g. range 0..180 and bearing 270)
+```
+
 ## QGIS side API
 
 ### settings.py
@@ -426,6 +482,16 @@ class HamQSettings:
     language: str            # hamq/language, default "auto"
     last_serbian: str        # hamq/last_serbian, default "sr_Latn"
     cty_downloaded: str      # hamq/cty_downloaded, ISO date or ""
+    rig_enabled: bool        # hamq/rig_enabled, default False
+    rig_host: str            # hamq/rig_host, default "127.0.0.1"
+    rig_port: int            # hamq/rig_port, default 4532
+    rig_poll_ms: int         # hamq/rig_poll_ms, default 1000
+    rot_enabled: bool        # hamq/rot_enabled, default False
+    rot_host: str            # hamq/rot_host, default "127.0.0.1"
+    rot_port: int            # hamq/rot_port, default 4533
+    rot_min_az: float        # hamq/rot_min_az, default 0.0
+    rot_max_az: float        # hamq/rot_max_az, default 360.0
+    rot_confirmed: bool      # hamq/rot_confirmed, first map-click confirmation done, default False
     def station(self) -> Station
 def profile_dir() -> str     # <QGIS settings dir>/hamq, created on demand
 def default_gpkg_path() -> str       # profile_dir()/hamq.gpkg
@@ -503,6 +569,23 @@ class WsjtxListener(QObject):
     def stop(self) -> None
     def is_running(self) -> bool
     def is_connected(self) -> bool
+
+class HamlibClient(QObject):                        # net/hamlib_client.py (M7)
+    # QTcpSocket, one command in flight, FIFO queue, 2 s timeout per command
+    # (timeout -> reset parser, mark disconnected, reconnect every 5 s), polling
+    connectedChanged = pyqtSignal(bool)
+    errorOccurred = pyqtSignal(str)                 # translated
+    def start(self, host: str, port: int) -> None
+    def stop(self) -> None
+    def is_connected(self) -> bool
+class RigClient(HamlibClient):                      # polls +f and +m every rig_poll_ms
+    stateChanged = pyqtSignal(dict)                 # {"freq_hz", "mode", "passband"} (None when unknown)
+    def set_frequency(self, hz: int) -> None
+    def set_mode(self, mode: str, passband: int = 0) -> None
+class RotatorClient(HamlibClient):                  # polls +p every second
+    positionChanged = pyqtSignal(float, float)      # azimuth, elevation
+    def set_position(self, azimuth: float, elevation: float = 0.0) -> None
+    def stop_rotation(self) -> None
 ```
 
 ### gui
@@ -511,8 +594,14 @@ class WsjtxListener(QObject):
   `set_setting`, `toggle` EN <-> last Serbian, applies `core.i18n.set_language`,
   emits `events().languageChanged`), `qgis_ui_locale()`, language menu and a
   toolbar switch button (EN / SR / СР).
-- `dock.py`: `HamQDock(QDockWidget)`: statistics, WSJT-X status, buttons;
-  `retranslate()`.
+- `dock.py`: `HamQDock(QDockWidget)` with tabs: Statistics, WSJT-X, Radio
+  (rig: frequency, band, mode, set frequency/mode; rotator: current and target
+  azimuth, turn, stop, "point on map"); `retranslate()`.
+- `rotator_tool.py`: `RotatorMapTool` (map click -> bearing from my QTH ->
+  `rotator_target` -> confirm the first time -> `RotatorClient.set_position`),
+  beam line from QTH on the map.
+- `qso_dialog.py`: manual QSO entry; frequency and mode prefilled from the rig
+  when connected; saved through core/qso + qgis_io/gpkg like any other QSO.
 - `settings_dialog.py`: `SettingsDialog(QDialog)`: call, grid, GeoPackage path,
   UDP address/port/autostart, language, cty.dat status + refresh.
 - `locator_search.py`: toolbar widget, `KN04ft` + Enter centers the map.

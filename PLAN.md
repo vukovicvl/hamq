@@ -19,9 +19,12 @@ Radio amater uveze svoj ADIF log i za par minuta vidi sve svoje veze na mapi, sa
 - WSJT-X UDP listener: nova veza se automatski upisuje i prikazuje
 - Podešavanja: moj pozivni znak, moj lokator, putanja do GeoPackage-a, UDP port
 
+**Dodato na zahtev, deo v0.1.0:**
+- Prekidač jezika interfejsa: English / Srpski (latinica) / Српски (ћирилица), bez restarta QGIS-a
+- Hamlib `rigctld`: prikaz i podešavanje frekvencije i vrste rada, ručni unos veze sa frekvencijom sa radija
+- Hamlib `rotctld`: klik na mapu okreće antenu (azimut od mog QTH-a), ručni azimut, stop
+
 **Van MVP-a (posle v0.1):**
-- Hamlib `rigctld` (čitanje i podešavanje frekvencije i moda)
-- Hamlib `rotctld` (klik na mapu okreće antenu)
 - Profil trase i Fresnelova zona preko DEM-a
 - Pokrivanje repetitora (viewshed)
 - Grey line sloj
@@ -115,19 +118,27 @@ Svaka faza ima svoj task fajl u `tasks/`. Faza je gotova kad su ispunjeni kriter
 
 ### M6. Izdanje v0.1.0 (1 dan)
 - README sa screenshotovima, CHANGELOG, ikonice
-- Prevod na srpski (`i18n/`)
+- Prevod na srpski (`i18n/`), latinica i ćirilica
+- Prekidač jezika u toolbar-u, meniju i podešavanjima (EN / SR latinica / SR ćirilica); menja meni, panel, dijaloge, Processing algoritme i nazive polja odmah, bez restarta
 - Paket za plugins.qgis.org, provera `metadata.txt`
 - **Gotovo kad:** zip prolazi validaciju repozitorijuma, instalacija iz zip-a radi na čistom profilu
 
-**Ukupno:** oko 9 radnih dana.
+### M7. Hamlib radio i rotator (1,5 dan)
+- `core/hamlib.py`: komande i parser proširenih odgovora (`+f`, `+m`, `+F`, `+M`, `+p`, `+P`, `+S`), Hamlib kodovi grešaka, preslikavanje azimuta na opseg rotatora (npr. 0-450)
+- `net/hamlib_client.py`: `QTcpSocket`, jedna komanda u letu, red čekanja, timeout 2 s, ponovno povezivanje na 5 s, osvežavanje na 1 s
+- Panel: radio (frekvencija, opseg, vrsta rada, podešavanje) i rotator (trenutni azimut, zadati azimut, stop)
+- Alat na mapi: klik -> azimut od mog QTH-a -> okreni antenu (potvrda prvi put), linija snopa na mapi
+- Ručni unos veze: frekvencija i vrsta rada se popunjavaju sa radija
+- **Gotovo kad:** radi protiv `rigctld -m 1` i `rotctld -m 1` (dummy), prekid veze sa demonom ne blokira QGIS i sam se oporavlja
+
+**Ukupno:** oko 11 radnih dana.
 
 ## Posle MVP-a (redosled)
 
-1. `rigctld`: prikaz trenutne frekvencije, upis frekvencije u ručno unetu vezu
-2. `rotctld`: klik na mapu, izračunaj azimut, okreni antenu
-3. Profil trase + Fresnel (VHF/UHF)
-4. Grey line
-5. QRZ/HamQTH lookup
+1. Profil trase + Fresnel (VHF/UHF)
+2. Grey line
+3. QRZ/HamQTH lookup
+4. ADX (XML), izvoz u ADIF
 
 ## Rizici
 
