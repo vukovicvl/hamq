@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.venv/
+venv/
+# downloaded at runtime, never committed (AD1C licence) - only the test excerpt is
+cty.dat
+cty.csv
+!tests/fixtures/cty/*
+# local QGIS test output
+tests/qgis/_output/
+*.gpkg-shm
+*.gpkg-wal
