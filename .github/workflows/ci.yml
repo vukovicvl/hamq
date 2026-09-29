@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUFF_VERSION: "0.16.9"
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: python -m pip install --disable-pip-version-check "ruff==${RUFF_VERSION}"
+      - name: ruff check
+        run: ruff check hamq tests scripts
+      - name: ruff format --check
+        run: ruff format --check hamq tests scripts
+
+  core-tests:
+    name: Core tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    container:
+      image: python:${{ matrix.python }}-slim
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pytest
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: pytest tests/core (no QGIS)
+        run: python -m pytest -p no:cacheprovider tests/core -q
+
+  qgis-tests:
+    name: QGIS tests (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: "3.44"
+            name: QGIS 3.44, Qt5, qgis/qgis:3.44-trixie
+          - target: "4.0"
+            name: QGIS 4.0, Qt6, qgis/qgis:4.0-trixie
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run tests/qgis in Docker
+        run: bash scripts/test_qgis.sh "${{ matrix.target }}" -ra
+
+  package:
+    name: Plugin zip
+    runs-on: ubuntu-latest
+    needs: [lint, core-tests]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build dist/hamq-<version>.zip
+        run: python scripts/package.py --output-dir dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hamq-plugin-zip
+          path: dist/*.zip
+          if-no-files-found: error

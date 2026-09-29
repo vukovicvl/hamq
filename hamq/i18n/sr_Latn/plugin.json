@@ -1,0 +1,13 @@
+{
+  "About HamQ": "O programu HamQ",
+  "Amateur radio tools for QGIS: Maidenhead locators, QSO log map, DXCC statistics and live QSOs from WSJT-X.": "Alati za radio-amatere u QGIS-u: Maidenhead lokatori, log veza na mapi, DXCC statistika i veze uživo iz WSJT-X-a.",
+  "Author: {author}": "Autor: {author}",
+  "Cleanup on unload failed: {error}": "Čišćenje pri isključivanju dodatka nije uspelo: {error}",
+  "Could not register the HamQ Processing provider": "Registracija HamQ Processing provajdera nije uspela",
+  "Credits": "Zahvalnice",
+  "DXCC data: cty.dat by Jim Reisert, AD1C (country-files.com), downloaded on first use and not bundled with the plugin.": "DXCC podaci: cty.dat, autor Jim Reisert, AD1C (country-files.com), preuzima se pri prvom korišćenju i ne isporučuje se uz dodatak.",
+  "License: {license}": "Licenca: {license}",
+  "Source code and issue tracker:": "Izvorni kod i prijava grešaka:",
+  "Version {version}": "Verzija {version}",
+  "WSJT-X UDP protocol: Joe Taylor, K1JT, and the WSJT Development Group.": "WSJT-X UDP protokol: Joe Taylor, K1JT, i WSJT Development Group."
+}

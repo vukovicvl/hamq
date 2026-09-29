@@ -414,8 +414,9 @@ def tr_noop(text: str) -> str
 ### core/hamlib.py (M7)
 
 Hamlib daemons (`rigctld`, `rotctld`) speak a line protocol over TCP. HamQ
-always uses the extended form (`+` prefix). Real Hamlib 4.6.5 responses
-(captured from `rigctld -m 1` / `rotctld -m 1`):
+always uses the extended form (`+` prefix). Real Hamlib 4.6.2 responses
+(captured from `rigctld -m 1` / `rotctld -m 1` in the `hamq/hamlib-dummy`
+Docker image; error codes and mode names are identical in 4.6.5):
 
 ```
 +f            -> 'get_freq:\nFrequency: 14074000\nRPRT 0\n'
@@ -427,7 +428,10 @@ always uses the extended form (`+` prefix). Real Hamlib 4.6.5 responses
 +P 123.5 10   -> 'set_pos: 123.5 10\nRPRT 0\n'
 +S            -> 'stop:\nRPRT 0\n'
 +X_bogus      -> ''  (NO response at all: the client must time out)
-+F abc        -> 'set_split_mode: bogus +F\nRPRT -1\nRPRT -18\nRPRT -1\n'  (stray lines: resync)
++F abc        -> 'set_freq: abc\nRPRT -1\n'
+(after '+X_bogus' the next line is swallowed as its argument:
+ '+F abc' then yields 'set_split_mode: bogus +F\nRPRT -1\nRPRT -18\nRPRT -1\n' — stray lines: resync)
++M USB        -> no reply; the NEXT line is taken as the passband (always send the passband)
 ```
 
 ```python
@@ -443,6 +447,7 @@ class HamlibResponse:
     def ok(self) -> bool
 
 class ResponseParser:            # incremental; tolerates partial lines, CRLF, stray RPRT lines
+                                 # Qt callers: feed(bytes(socket.readAll())) — QByteArray is rejected
     def feed(self, data: bytes | str) -> list[HamlibResponse]
     def reset(self) -> None
 
@@ -456,7 +461,8 @@ def cmd_stop() -> str                        # '+S\n'
 def expected_command(cmd: str) -> str        # '+f\n' -> 'get_freq' (header the reply must carry)
 MODES: tuple[str, ...]                       # Hamlib mode names (USB LSB CW CWR AM FM WFM RTTY RTTYR PKTUSB PKTLSB PKTFM ...)
 def parse_freq(resp: HamlibResponse) -> int | None                # Hz
-def parse_mode(resp: HamlibResponse) -> tuple[str, int] | None    # (mode, passband Hz)
+def parse_mode(resp: HamlibResponse) -> tuple[str, int] | None    # (mode, passband Hz); canonical
+                                                                  # MODES names (daemon 'FM-D' -> 'PKTFM')
 def parse_pos(resp: HamlibResponse) -> tuple[float, float] | None # (azimuth, elevation)
 def error_message(code: int) -> str          # translated text for Hamlib RPRT codes
 def rotator_target(bearing_deg: float, min_az: float, max_az: float,
@@ -572,7 +578,9 @@ class WsjtxListener(QObject):
 
 class HamlibClient(QObject):                        # net/hamlib_client.py (M7)
     # QTcpSocket, one command in flight, FIFO queue, 2 s timeout per command
-    # (timeout -> reset parser, mark disconnected, reconnect every 5 s), polling
+    # (timeout -> reset parser, mark disconnected, reconnect every 5 s), polling.
+    # rigctld closes the client socket after a hard (non-soft) rig error when it
+    # cannot reopen the rig: treat a remote close like a timeout and reconnect.
     connectedChanged = pyqtSignal(bool)
     errorOccurred = pyqtSignal(str)                 # translated
     def start(self, host: str, port: int) -> None

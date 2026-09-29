@@ -1,0 +1,7 @@
+WSJT-X ADIF Export<eoh>
+<call:6>IT9XYZ <gridsquare:4>JM77 <mode:3>FT8 <rst_sent:3>-08 <rst_rcvd:3>-13 <qso_date:8>20260912 <time_on:6>171530 <qso_date_off:8>20260912 <time_off:6>171642 <band:3>20m <freq:9>14.075740 <station_callsign:5>YU1QQ <my_gridsquare:6>KN04fs <eor>
+<call:5>W1XYZ <gridsquare:4>FN42 <mode:3>FT8 <rst_sent:3>-15 <rst_rcvd:3>-18 <qso_date:8>20260912 <time_on:6>180102 <qso_date_off:8>20260912 <time_off:6>180215 <band:3>20m <freq:9>14.075910 <station_callsign:5>YU1QQ <my_gridsquare:6>KN04fs <eor>
+<call:6>KH6XYZ <gridsquare:4>BL11 <mode:3>FT8 <rst_sent:3>-19 <rst_rcvd:3>-21 <qso_date:8>20260913 <time_on:6>064500 <qso_date_off:8>20260913 <time_off:6>064615 <band:3>17m <freq:9>18.101350 <station_callsign:5>YU1QQ <my_gridsquare:6>KN04fs <eor>
+<call:6>9A2XYZ <gridsquare:4>JN75 <mode:4>MFSK <submode:3>FT4 <rst_sent:3>+02 <rst_rcvd:3>-03 <qso_date:8>20260913 <time_on:6>192030 <qso_date_off:8>20260913 <time_off:6>192100 <band:3>40m <freq:8>7.048520 <station_callsign:5>YU1QQ <my_gridsquare:6>KN04fs <eor>
+<call:6>YU7XYZ <gridsquare:4>JN95 <mode:4>MFSK <submode:3>FT4 <rst_sent:3>+10 <rst_rcvd:3>+07 <qso_date:8>20260913 <time_on:6>192245 <qso_date_off:8>20260913 <time_off:6>192315 <band:3>40m <freq:8>7.048730 <station_callsign:5>YU1QQ <my_gridsquare:6>KN04fs <eor>
+<call:9>OH2XYZ/MM <gridsquare:0> <mode:3>FT8 <rst_sent:3>-12 <rst_rcvd:3>-16 <qso_date:8>20260914 <time_on:6>101500 <qso_date_off:8>20260914 <time_off:6>101612 <band:3>15m <freq:9>21.075420 <station_callsign:5>YU1QQ <my_gridsquare:6>KN04fs <eor>

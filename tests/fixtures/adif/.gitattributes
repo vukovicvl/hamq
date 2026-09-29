@@ -1,0 +1,2 @@
+# Exact bytes matter (field lengths, CRLF, BOM, latin-1): never convert line ends.
+*.adi -text

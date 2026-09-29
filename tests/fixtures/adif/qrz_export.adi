@@ -1,0 +1,99 @@
+QRZLogbook download for yu1qq
+Date: Tue Sep 29 07:00:00 2026
+Bookid: 412345
+Records: 3
+<ADIF_VER:5>3.1.4
+<PROGRAMID:10>QRZLogbook
+<PROGRAMVERSION:3>2.0
+<eoh>
+
+<app_qrzlog_logid:9>987654321
+<app_qrzlog_qsldate:8>20260916
+<app_qrzlog_status:1>C
+<band:3>20m
+<band_rx:3>20m
+<call:6>VK3XYZ
+<cont:2>OC
+<country:9>Australia
+<cqz:2>30
+<distance:5>15820
+<dxcc:3>150
+<email:0>
+<freq:8>14.07400
+<gridsquare:6>QF22oc
+<ituz:2>59
+<lat:11>S037 51.500
+<lon:11>E145 00.000
+<lotw_qsl_rcvd:1>Y
+<lotw_qsl_sent:1>Y
+<mode:3>FT8
+<my_city:7>Beograd
+<my_country:6>Serbia
+<my_gridsquare:6>KN04fs
+<my_lat:11>N044 48.750
+<my_lon:11>E020 27.672
+<name:4>Jack
+<qsl_rcvd:1>N
+<qsl_sent:1>N
+<qso_date:8>20260915
+<qso_date_off:8>20260915
+<rst_rcvd:3>-14
+<rst_sent:3>-11
+<station_callsign:5>YU1QQ
+<time_off:6>061715
+<time_on:6>061600
+<eor>
+
+<app_qrzlog_logid:9>987654322
+<app_qrzlog_status:1>N
+<band:3>10m
+<call:5>W5XYZ
+<cont:2>NA
+<country:13>United States
+<cqz:1>4
+<dxcc:3>291
+<email:0>
+<freq:8>28.07400
+<gridsquare:6>EM10dg
+<ituz:1>7
+<lat:11>N030 16.250
+<lon:11>W097 44.500
+<mode:3>FT8
+<my_city:7>Beograd
+<my_country:6>Serbia
+<my_gridsquare:6>KN04fs
+<my_lat:11>N044 48.750
+<my_lon:11>E020 27.672
+<qsl_rcvd:1>N
+<qsl_sent:1>N
+<qso_date:8>20260916
+<rst_rcvd:3>-09
+<rst_sent:3>-07
+<station_callsign:5>YU1QQ
+<time_on:6>150230
+<eor>
+
+<app_qrzlog_logid:9>987654323
+<app_qrzlog_status:1>N
+<band:3>20m
+<call:6>DL1XYZ
+<comment:21>locator typed by hand
+<country:7>Germany
+<dxcc:3>230
+<email:0>
+<freq:8>14.07400
+<gridsquare:3>JO6
+<mode:3>FT8
+<my_city:7>Beograd
+<my_country:6>Serbia
+<my_gridsquare:6>KN04fs
+<my_lat:11>N044 48.750
+<my_lon:11>E020 27.672
+<qsl_rcvd:1>N
+<qsl_sent:1>N
+<qso_date:8>20260917
+<rst_rcvd:3>-05
+<rst_sent:3>-02
+<station_callsign:5>YU1QQ
+<time_on:6>120000
+<eor>

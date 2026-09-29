@@ -1,0 +1,8 @@
+{
+  "Auto (QGIS language)": "Automatski (jezik QGIS-a)",
+  "The translation of {text} differs between {first} and {second}; the one from {second} is used": "Prevod teksta {text} nije isti u {first} i {second}; koristi se prevod iz {second}",
+  "Translation file {file} could not be read and was skipped: {error}": "Fajl sa prevodima {file} nije moguće pročitati, preskočen je: {error}",
+  "Translation file {file} is not a JSON object and was skipped": "Fajl sa prevodima {file} nije JSON objekat, preskočen je",
+  "Translation file {file}: the entry {text} is not text and was skipped": "Fajl sa prevodima {file}: unos {text} nije tekst, preskočen je",
+  "Translations could not be loaded from {path}: {error}": "Učitavanje prevoda iz {path} nije uspelo: {error}"
+}

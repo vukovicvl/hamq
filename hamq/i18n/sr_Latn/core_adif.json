@@ -1,0 +1,16 @@
+{
+  "File is not valid UTF-8, it was read as Latin-1 (ISO 8859-1)": "Fajl nije ispravan UTF-8, pročitan je kao Latin-1 (ISO 8859-1)",
+  "Further warnings not listed: {count}": "Broj upozorenja koja nisu prikazana: {count}",
+  "Header: duplicate field {field}, the last value is used": "Zaglavlje: duplikat polja {field}, koristi se poslednja vrednost",
+  "Header: field {field} runs past the end of the header, value may be incomplete": "Zaglavlje: polje {field} prelazi kraj zaglavlja, vrednost je možda nepotpuna",
+  "Header: length of field {field} does not match its data, the value may be wrong": "Zaglavlje: dužina polja {field} ne odgovara podacima, vrednost je možda pogrešna",
+  "Header: length of field {field} is given in bytes instead of characters, value corrected": "Zaglavlje: dužina polja {field} je data u bajtovima umesto u znakovima, vrednost je ispravljena",
+  "Record {index}: another <EOH> found (joined files?), the fields before it were treated as header": "Zapis {index}: pronađen je još jedan <EOH> (spojeni fajlovi?), polja ispred njega su uzeta kao zaglavlje",
+  "Record {index}: duplicate field {field}, the last value is used": "Zapis {index}: duplikat polja {field}, koristi se poslednja vrednost",
+  "Record {index}: field {field} has no length, skipped": "Zapis {index}: polje {field} nema navedenu dužinu, preskočeno",
+  "Record {index}: field {field} runs past the end of the file, value may be incomplete": "Zapis {index}: polje {field} prelazi kraj fajla, vrednost je možda nepotpuna",
+  "Record {index}: invalid tag {tag} skipped": "Zapis {index}: neispravna oznaka {tag} je preskočena",
+  "Record {index}: length of field {field} does not match its data, this or the next field may be wrong": "Zapis {index}: dužina polja {field} ne odgovara podacima, ovo ili sledeće polje je možda pogrešno",
+  "Record {index}: length of field {field} is given in bytes instead of characters, value corrected": "Zapis {index}: dužina polja {field} je data u bajtovima umesto u znakovima, vrednost je ispravljena",
+  "Record {index}: missing <EOR> at the end of the file, record kept": "Zapis {index}: nedostaje <EOR> na kraju fajla, zapis je zadržan"
+}
