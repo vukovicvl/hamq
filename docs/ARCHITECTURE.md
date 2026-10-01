@@ -882,24 +882,27 @@ below were already used across modules, or were added by the release fixes:
 
 ## Skills and this contract
 
-The skills in `.github/skills/` are background knowledge written before the code. Where
-they differ from this file, **this contract and the code win**; do not "fix" the
-implementation back to a skill. Known differences:
+The skills in `.github/skills/` are background knowledge, first written before the code.
+Where they differ from this file, **this contract and the code win**; do not "fix" the
+implementation back to a skill.
+
+The skills, `AGENTS.md`, `.github/agents/` and `.github/prompts/` were brought in line
+with v0.1.0 on 2026-10-01; no differences are known since. Resolved then:
 
 - adif: field lengths count characters, with the narrow byte-length tolerance of section
-  "core/adif.py" (the skill says to take LENGTH characters and never be clever); the
-  duplicate key uses `modes.dedup_mode`, not `MODE`; `GRIDSQUARE` may have 2 to 8
-  characters (2 = a field, used only as described in "core/qso.py"); position priority
-  has the 2-character exception.
-- hamlib: Hamlib is part of v0.1.0 (PLAN.md M7), not post-MVP. An azimuth outside the
-  rotator range is refused (`rotator_target` returns `None` and the map tool says why),
-  never clamped to the range end.
+  "core/adif.py"; the duplicate key uses `modes.dedup_mode`; `GRIDSQUARE` may have 2 to 8
+  characters, with the 2-character exception in the position priority.
+- hamlib: part of v0.1.0 (PLAN.md M7), not post-MVP; an azimuth outside the rotator range
+  is refused (`rotator_target` returns `None`), never clamped to the range end.
 - pyqgis-plugin: the log is written with plain SQLite (the "GeoPackage write rule"
-  above), not `provider.addFeatures`; translations use `tr()` from `hamq.core.i18n`,
-  never `QCoreApplication.translate` (section "Translation (i18n) rules").
+  above), not `provider.addFeatures`; translations use `tr()` from `hamq.core.i18n`.
 - wsjtx-udp: the listener binds the configured address (127.0.0.1 by default) and
-  `AnyIPv4` only for `0.0.0.0`, multicast and broadcast, with no proxy; the skill's
-  "bind `AnyIPv4`" would accept QSOs from every host on the network. The decoder reads
-  every Status field, not only the first three.
-- geodesy, maidenhead, dxcc-cty: followed; HamQ only extends them (dxcc-cty: the
-  `/LH`, `/FF`, `/YL` and similar suffixes and the KG4 rule).
+  `AnyIPv4` only for `0.0.0.0`, multicast and broadcast, with no proxy; the decoder reads
+  every Status field.
+- maidenhead: the reference encoder uses integer cell arithmetic, as `core/maidenhead.py`.
+- geodesy: measured differences to WGS84 instead of "under 0.5 %"; `distance_km` clamps
+  the haversine term for antipodal pairs.
+- dxcc-cty: the real download and cache flow, the `/LH`, `/FF`, `/YL` and similar
+  suffixes and the KG4 rule.
+
+A deliberate difference introduced later is listed here until the skill is updated.

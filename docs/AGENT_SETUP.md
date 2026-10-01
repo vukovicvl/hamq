@@ -10,7 +10,7 @@
 | `.github/agents/*.agent.md` | Custom agenti: planner, implementer, reviewer, tester |
 | `.github/prompts/*.prompt.md` | Gotovi promptovi: `/plan-milestone`, `/do-task`, `/review-task`, `/release-check` |
 | `.github/skills/*/SKILL.md` | Domensko znanje: pyqgis-plugin, maidenhead, adif, geodesy, dxcc-cty, wsjtx-udp, hamlib |
-| `tasks/` | Task fajlovi, jedan po poslu. `_TEMPLATE.md` + prvi task `M0-01` |
+| `tasks/` | Task fajlovi, jedan po poslu. `_TEMPLATE.md` + urađeni taskovi `M0-01` do `M7-03` i `INT-01` (v0.1.0) |
 
 ## Tok rada
 

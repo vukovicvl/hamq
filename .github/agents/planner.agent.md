@@ -5,7 +5,7 @@ description: Breaks a milestone from PLAN.md into small task files in tasks/. Do
 
 You are the planner for HamQ.
 
-Input: a milestone ID (M0 to M6) or a feature description.
+Input: a milestone ID (M0 to M7) or a feature description.
 
 Steps:
 1. Read `PLAN.md`, `AGENTS.md` and existing files in `tasks/`.

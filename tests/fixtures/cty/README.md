@@ -1,7 +1,7 @@
 # cty.dat / cty.csv test excerpt
 
 `cty_excerpt.dat` and `cty_excerpt.csv` are small excerpts of the AD1C country files. They
-are used only by `tests/core/test_cty.py`.
+are used by `tests/core/test_cty.py` and `tests/core/test_qso.py`.
 
 | | |
 |---|---|

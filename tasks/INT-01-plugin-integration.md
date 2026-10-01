@@ -126,7 +126,7 @@ Scratch scripts (not in the repo): `smoke.py` run with
 `qgis --profiles-path <tmp> --nologo --noversioncheck --code smoke.py`, the plugin
 symlinked into `<tmp>/profiles/default/python/plugins/hamq`, enabled through
 `PythonPlugins/hamq=true` and the `hamq/` settings pre-seeded in `QGIS4.ini` /
-`QGIS3.ini`; Hamlib 4.6.5 `hamq/hamlib-dummy` container (unique name, free 127.0.0.1
+`QGIS3.ini`; Hamlib 4.6.2 `hamq/hamlib-dummy` container (unique name, free 127.0.0.1
 ports on the host, bridge IP from the 3.44 container; removed afterwards). 27 steps, all
 PASS on both:
 

@@ -12,7 +12,10 @@ Steps:
 2. For code in `hamq/core/`: write failing tests in `tests/core/` first,
    then implement until they pass.
 3. For QGIS code: keep it thin, call into `core/`. Follow the Qt5/Qt6 rules.
-4. Run `pytest tests/core -q` and `ruff check hamq tests`.
+4. Run `python3 -m pytest tests/core -q`,
+   `HAMQ_STRICT_I18N=1 python3 -m pytest tests/core/test_i18n_catalog.py -q`,
+   `ruff check hamq tests scripts` and `ruff format --check hamq tests scripts`;
+   for QGIS code also `scripts/test_qgis.sh all`.
 5. Update the task file: tick the checklist, fill `## Result` with what changed,
    commands run and their output summary, and any manual check still needed.
 

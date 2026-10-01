@@ -12,8 +12,8 @@ that QGIS does not convert:
 * ``QgsVectorFileWriter.addFeature`` rejects the feature ("Could not convert
   value") on every supported version;
 * the OGR provider (``layer.dataProvider().addFeatures``) is worse: QGIS 3.34,
-  3.40, 3.44 and 4.0 report success and silently store NULL, only QGIS 4.2
-  rejects the feature ("wrong data type ... expected QDateTime").
+  3.40, 3.44, 4.0 and 4.2.3 report success and silently store NULL, only QGIS
+  4.2.1 rejects the feature ("wrong data type ... expected QDateTime").
 
 Always convert with :func:`to_qdatetime` when writing (a UTC ``QDateTime`` is
 stored as ``...Z`` and reads back as UTC) and use :func:`from_qdatetime` when
