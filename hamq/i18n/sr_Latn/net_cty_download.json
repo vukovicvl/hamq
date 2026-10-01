@@ -1,0 +1,22 @@
+{
+  "A cty.dat download is already running": "Preuzimanje cty.dat je već u toku",
+  "Downloading cty.dat and cty.csv: {urls}": "Preuzimanje fajlova cty.dat i cty.csv: {urls}",
+  "The previously downloaded files are still used.": "I dalje se koriste ranije preuzeti fajlovi.",
+  "The saved cty.dat contains no entities; download it again": "Sačuvani cty.dat ne sadrži nijedan entitet; preuzmite ga ponovo",
+  "a file is larger than {size} MB": "fajl je veći od {size} MB",
+  "cty.dat could not be loaded: {error}": "cty.dat nije moguće učitati: {error}",
+  "cty.dat could not be read: {error}": "cty.dat nije moguće pročitati: {error}",
+  "cty.dat download canceled.": "Preuzimanje cty.dat je otkazano.",
+  "cty.dat download failed: {reason}.": "Preuzimanje cty.dat nije uspelo: {reason}.",
+  "cty.dat downloaded (version {version}), entities: {count}": "cty.dat je preuzet (verzija {version}), broj entiteta: {count}",
+  "cty.dat downloaded, entities: {count}": "cty.dat je preuzet, broj entiteta: {count}",
+  "cty.dat was loaded with warnings ({count}), the first one: {warning}": "cty.dat je učitan uz upozorenja ({count}), prvo: {warning}",
+  "no data from the server for {seconds} s": "server nije poslao podatke za {seconds} s",
+  "the downloaded cty.csv does not match cty.dat (DXCC codes for {count} of {total} entities)": "preuzeti cty.csv ne odgovara fajlu cty.dat (DXCC brojevi za {count} od {total} entiteta)",
+  "the downloaded cty.dat is not valid (entities: {count}, at least {minimum} expected)": "preuzeti cty.dat nije ispravan (broj entiteta: {count}, očekuje se najmanje {minimum})",
+  "the files could not be saved: {error}": "fajlove nije moguće sačuvati: {error}",
+  "unexpected error: {error}": "neočekivana greška: {error}",
+  "{file}: the request was aborted by the network timeout of QGIS": "{file}: QGIS je prekinuo zahtev jer je isteklo vreme čekanja mreže",
+  "{file}: the server answered with HTTP status {status}": "{file}: server je odgovorio HTTP statusom {status}",
+  "{file}: unexpected HTTP status {status}": "{file}: neočekivan HTTP status {status}"
+}

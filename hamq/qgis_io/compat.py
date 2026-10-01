@@ -576,3 +576,35 @@ FILE_DIALOG_DONT_CONFIRM_OVERWRITE = _resolve(
     "FILE_DIALOG_DONT_CONFIRM_OVERWRITE",
     (QtWidgets, "QFileDialog", "Option", "DontConfirmOverwrite"),
 )
+
+
+# ---------------------------------------------------------------------------
+# M2-03 / M3-02: default styles (hamq/qgis_io/styles.py, scripts/make_styles.py)
+# ---------------------------------------------------------------------------
+
+from qgis.core import QgsPalLayerSettings  # noqa: E402
+
+#: ``QgsPalLayerSettings.placement``: polygon labels over the centroid (grid locators).
+LABEL_PLACEMENT_OVER_POINT = _resolve(
+    "LABEL_PLACEMENT_OVER_POINT", (Qgis, "LabelPlacement", "OverPoint")
+)
+#: Data-defined label property "show label" (``QgsPalLayerSettings.Property.Show``).
+LABEL_PROPERTY_SHOW = _resolve(
+    "LABEL_PROPERTY_SHOW",
+    (QgsPalLayerSettings, "Property", "Show"),
+    (QgsPalLayerSettings, "Show"),
+)
+#: ``loadNamedStyle`` / ``saveNamedStyle`` categories: symbology and labels only, so a
+#: default style never touches field aliases, forms or other layer settings.
+STYLE_CATEGORY_SYMBOLOGY = _resolve(
+    "STYLE_CATEGORY_SYMBOLOGY",
+    (QgsMapLayer, "StyleCategory", "Symbology"),
+    (QgsMapLayer, "Symbology"),
+)
+STYLE_CATEGORY_LABELING = _resolve(
+    "STYLE_CATEGORY_LABELING",
+    (QgsMapLayer, "StyleCategory", "Labeling"),
+    (QgsMapLayer, "Labeling"),
+)
+#: ``QgsSimpleFillSymbolLayer.brushStyle()`` of a fill without a brush (grid cells).
+BRUSH_NONE = _resolve("BRUSH_NONE", (Qt, "BrushStyle", "NoBrush"))

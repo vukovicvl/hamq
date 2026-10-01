@@ -1,0 +1,7 @@
+{
+  "Locator, e.g. KN04ft": "Lokator, npr. KN04ft",
+  "Maidenhead locator (2, 4, 6 or 8 characters, e.g. KN04ft): press Enter to center the map on it": "Maidenhead lokator (2, 4, 6 ili 8 znakova, npr. KN04ft): pritisnite Enter da se mapa centrira na njega",
+  "The map cannot show {locator} in the current projection.": "Mapa ne može da prikaže {locator} u trenutnoj projekciji.",
+  "Unexpected error in {slot}: {error}": "Neočekivana greška u {slot}: {error}",
+  "{text} is not a valid Maidenhead locator: use 2, 4, 6 or 8 characters, e.g. KN04ft.": "{text} nije ispravan Maidenhead lokator: unesite 2, 4, 6 ili 8 znakova, npr. KN04ft."
+}

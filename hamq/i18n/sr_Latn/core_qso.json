@@ -1,0 +1,23 @@
+{
+  "Further warnings not listed: {count}": "Broj upozorenja koja nisu prikazana: {count}",
+  "My locator {locator} is invalid, ignored": "Moj lokator {locator} nije ispravan, zanemaren je",
+  "QSO": "Veza",
+  "QSO {details}": "Veza {details}",
+  "QSOs without a position, not shown on the map: {count}": "Veze bez pozicije, ne prikazuju se na mapi: {count}",
+  "QSOs without distance and bearing, my QTH unknown (set your locator in the HamQ settings): {count}": "Veze bez rastojanja i azimuta, moj QTH nije poznat (unesite svoj lokator u HamQ podešavanjima): {count}",
+  "Record {index}": "Zapis {index}",
+  "Record {index} ({details})": "Zapis {index} ({details})",
+  "{record}: DXCC {dxcc} in the log does not match cty.dat ({country}, DXCC {cty_dxcc})": "{record}: DXCC {dxcc} u logu ne odgovara podatku iz cty.dat ({country}, DXCC {cty_dxcc})",
+  "{record}: frequency {freq} MHz is outside the amateur bands, band unknown": "{record}: frekvencija {freq} MHz je van radio-amaterskih opsega, opseg nije poznat",
+  "{record}: invalid locator {value} in {field}, not used for the position": "{record}: neispravan lokator {value} u polju {field}, ne koristi se za poziciju",
+  "{record}: invalid value {value} in {field}, ignored": "{record}: neispravna vrednost {value} u polju {field}, zanemarena",
+  "{record}: locator {value} in {field} cut to {locator}": "{record}: lokator {value} u polju {field} skraćen je na {locator}",
+  "{record}: missing CALL, skipped": "{record}: nedostaje CALL, preskočeno",
+  "{record}: missing or invalid QSO_DATE or TIME_ON, skipped": "{record}: QSO_DATE ili TIME_ON nedostaje ili nije ispravan, preskočeno",
+  "{record}: my QTH unknown (no MY_LAT/MY_LON, MY_GRIDSQUARE or locator in the HamQ settings), no distance and bearing": "{record}: moj QTH nije poznat (nema MY_LAT/MY_LON, MY_GRIDSQUARE ni lokatora u HamQ podešavanjima), nema rastojanja ni azimuta",
+  "{record}: no position (no LAT/LON, valid locator or cty.dat entity), the QSO is not shown on the map": "{record}: nema pozicije (nema LAT/LON, ispravnog lokatora ni entiteta iz cty.dat), veza se ne prikazuje na mapi",
+  "{record}: unknown band {value} in BAND, band {band} taken from FREQ": "{record}: nepoznat opseg {value} u polju BAND, opseg {band} je određen prema FREQ",
+  "{record}: unknown band {value} in BAND, kept as logged": "{record}: nepoznat opseg {value} u polju BAND, zadržan je kako je upisan",
+  "{record}: {fields} = 0/0 is not a real position, ignored": "{record}: {fields} = 0/0 nije stvarna pozicija i zanemaruje se",
+  "{record}: {field} without {other}, ignored": "{record}: polje {field} bez polja {other}, zanemareno"
+}

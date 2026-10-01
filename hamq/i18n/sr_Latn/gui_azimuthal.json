@@ -1,0 +1,6 @@
+{
+  "Azimuthal map grid ({locator})": "Mreža azimutalne karte ({locator})",
+  "Set a valid QTH locator in the HamQ settings to use the azimuthal map.": "Za azimutalnu kartu unesite ispravan QTH lokator u HamQ podešavanjima.",
+  "The azimuthal projection for {locator} could not be created.": "Nije moguće napraviti azimutalnu projekciju za {locator}.",
+  "Unexpected error in {slot}: {error}": "Neočekivana greška u {slot}: {error}"
+}

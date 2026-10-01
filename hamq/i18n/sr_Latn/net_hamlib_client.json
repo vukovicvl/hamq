@@ -1,0 +1,20 @@
+{
+  "Connected to {daemon} at {address}": "HamQ je povezan sa servisom {daemon} ({address})",
+  "Connection to {daemon} at {address} failed: {error}; reconnecting": "Komunikacija sa servisom {daemon} ({address}) je prekinuta: {error}; ponovno povezivanje",
+  "Could not connect to {daemon} at {address}: no answer within {seconds} s": "Nije moguće povezati se sa servisom {daemon} ({address}): nema odgovora u roku od {seconds} s",
+  "Could not connect to {daemon} at {address}: {error}": "Nije moguće povezati se sa servisom {daemon} ({address}): {error}",
+  "Hamlib command {command} failed: {error}": "Hamlib komanda {command} nije uspela: {error}",
+  "Reading the frequency failed: {error}": "Čitanje frekvencije nije uspelo: {error}",
+  "Reading the mode failed: {error}": "Čitanje vrste rada nije uspelo: {error}",
+  "Reading the rotator position failed: {error}": "Čitanje položaja rotatora nije uspelo: {error}",
+  "Setting the frequency failed: {error}": "Podešavanje frekvencije nije uspelo: {error}",
+  "Setting the mode failed: {error}": "Podešavanje vrste rada nije uspelo: {error}",
+  "Stopping the rotator failed: {error}": "Zaustavljanje rotatora nije uspelo: {error}",
+  "Too many Hamlib commands are waiting; the oldest one was dropped": "Previše Hamlib komandi čeka na slanje; najstarija je odbačena",
+  "Turning the rotator failed: {error}": "Okretanje rotatora nije uspelo: {error}",
+  "Unexpected error in the Hamlib client: {error}": "Neočekivana greška u Hamlib klijentu: {error}",
+  "not connected to {daemon}": "HamQ nije povezan sa servisom {daemon}",
+  "the connection to {daemon} was lost": "komunikacija sa servisom {daemon} je prekinuta",
+  "{daemon} at {address} closed the connection; reconnecting": "Servis {daemon} ({address}) je prekinuo komunikaciju; ponovno povezivanje",
+  "{daemon} at {address} did not reply within {seconds} s; reconnecting": "Servis {daemon} ({address}) nije odgovorio u roku od {seconds} s; ponovno povezivanje"
+}

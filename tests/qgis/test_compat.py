@@ -143,6 +143,11 @@ EXPECTED = {
     "TOOLBUTTON_MENU_BUTTON_POPUP": ({1}, {"ToolButtonPopupMode"}),  # M6-02
     "LABEL_PLACEMENT_LINE": ({2}, {"LabelPlacement"}),  # M3-03
     "FILE_DIALOG_DONT_CONFIRM_OVERWRITE": ({0x4}, {"Option"}),  # M0-03
+    "LABEL_PLACEMENT_OVER_POINT": ({1}, {"LabelPlacement"}),  # M3-02
+    "LABEL_PROPERTY_SHOW": ({15}, {"Property"}),  # M3-02
+    "STYLE_CATEGORY_SYMBOLOGY": ({2}, {"StyleCategory"}),  # M3-02
+    "STYLE_CATEGORY_LABELING": ({8}, {"StyleCategory"}),  # M3-02
+    "BRUSH_NONE": ({0}, {"BrushStyle"}),  # M3-02
     "NET_ATTR_HTTP_STATUS": ({0}, {"Attribute"}),
     "NET_ATTR_REDIRECT_POLICY": ({22, 25}, {"Attribute"}),
     "NET_REDIRECT_NO_LESS_SAFE": ({1}, {"RedirectPolicy"}),
@@ -639,3 +644,48 @@ def test_file_dialog_dont_confirm_overwrite(qgis_app):
     dialog.setOption(compat.FILE_DIALOG_DONT_CONFIRM_OVERWRITE, True)
     assert dialog.testOption(compat.FILE_DIALOG_DONT_CONFIRM_OVERWRITE)
     dialog.deleteLater()
+
+
+# --- M2-03 / M3-02: default styles -----------------------------------------------------
+
+
+def test_label_placement_over_point_and_show_property(qgis_app):
+    from qgis.core import QgsPalLayerSettings, QgsProperty
+
+    settings = QgsPalLayerSettings()
+    settings.placement = compat.LABEL_PLACEMENT_OVER_POINT
+    assert settings.placement == compat.LABEL_PLACEMENT_OVER_POINT
+    properties = settings.dataDefinedProperties()
+    properties.setProperty(compat.LABEL_PROPERTY_SHOW, QgsProperty.fromExpression("1 = 1"))
+    settings.setDataDefinedProperties(properties)
+    assert settings.dataDefinedProperties().isActive(compat.LABEL_PROPERTY_SHOW)
+    assert (
+        settings.dataDefinedProperties().property(compat.LABEL_PROPERTY_SHOW).expressionString()
+        == "1 = 1"
+    )
+
+
+def test_style_categories(tmp_path, qgis_app):
+    from qgis.core import QgsVectorLayer
+
+    layer = QgsVectorLayer("Point?crs=EPSG:4326&field=band:string", "styled", "memory")
+    layer.setFieldAlias(0, "Band alias")
+    path = str(tmp_path / "style.qml")
+    categories = compat.STYLE_CATEGORY_SYMBOLOGY | compat.STYLE_CATEGORY_LABELING
+    _message, ok = layer.saveNamedStyle(path, categories=categories)
+    assert ok
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    assert 'styleCategories="Symbology|Labeling"' in text
+    assert "Band alias" not in text
+    other = QgsVectorLayer("Point?crs=EPSG:4326&field=band:string", "other", "memory")
+    _message, ok = other.loadNamedStyle(path, categories=categories)
+    assert ok
+    assert other.attributeAlias(0) == ""
+
+
+def test_brush_none(qgis_app):
+    from qgis.core import QgsFillSymbol
+
+    symbol = QgsFillSymbol.createSimple({"style": "no"})
+    assert symbol.symbolLayer(0).brushStyle() == compat.BRUSH_NONE
