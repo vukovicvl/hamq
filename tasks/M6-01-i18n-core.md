@@ -269,3 +269,22 @@ Before the fix round:
 - The guard calls the private helper `i18n._catalog_file_names()` so that it checks exactly
   the files the runtime loads; renaming that helper needs the guard updated too.
 - `CHANGELOG.md` was not updated (outside this task's file scope in the parallel run).
+- **Release pass (2026-10-01)** (translations and docs): all 27 catalogs (509 entries, 459
+  distinct English texts) were read together and their Cyrillic rendering checked value
+  by value (`latin_to_cyrillic`). The glossary in `docs/ARCHITECTURE.md` gained the terms
+  the modules had translated in different ways (logger, record / field / header / tag,
+  position of a station vs. of the rotator, RST sent / received, receiving WSJT-X
+  messages vs. listening, daemon, azimuth range, rotator map tool, "set your ..." ->
+  "unesite ...", extent / level, layer / project / edit mode, plugin / dialog / tab,
+  file / folder / read-only, limit, OK / Cancel / Yes / No, ...) and Serbian style rules
+  (sentence case, imperative for commands and plural for instructions, case endings after
+  a hyphen, „…“ quotes, decimal comma, one translation per English text). Values were
+  aligned with it, for example "Point on map" -> "Usmeri klikom na mapu", "RST sent" ->
+  "Poslati RST", the logger in the busy-port message -> "program za vođenje dnevnika
+  veza", the search tag "ham radio" -> "radio-amaterizam", `cty.dat, red {line}: ...`,
+  and the three "Set your ... in Settings" texts -> "Unesite ..."
+  (`tests/qgis/test_rotator_tool.py` pins the rotator one and was changed with it). Every
+  value renders correctly in Cyrillic: names stay Latin (`Maidenhead`, `Hamlib`,
+  `JTAlert`, `GridTracker`, `Jim Reisert`, `Joe Taylor`, `WSJT Development Group`),
+  endings after a hyphen are Cyrillic (`QTH-у`, `WSJT-X-а`, `rigctld-ом`) and no digraph
+  crosses a morpheme boundary, so `PROTECTED_WORDS` needed no new entry.

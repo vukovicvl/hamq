@@ -217,4 +217,9 @@ Manual checks still needed:
   - CI: the QGIS matrix runs 3.34 (`qgis/qgis:3.34`, the minimum version, desktop image
     with QtSvg), 3.44, 4.0 and 4.2 (`qgis/qgis:4.2-trixie`); 3.34 and 4.2 run with the
     same Docker options as `scripts/test_qgis.sh`, which has no target for those images
-    yet.
+    yet. The core job also runs the catalog guard with `HAMQ_STRICT_I18N=1` (unused
+    catalog keys fail). Both new image jobs were run locally with the CI command: 3.34.15
+    1085 passed, 3 skipped; 4.2.3 needed the `test_fields.py` fix noted in M0-02.
+  - Final verification (2026-10-01): `hamq/__init__.py` has `from __future__ import
+    annotations` now (it has no annotations, so nothing changes at run time);
+    `FUTURE_IMPORT_PENDING` and its xfail are gone from `tests/core/test_architecture.py`.

@@ -11,7 +11,7 @@
   "Import ADIF": "Uvezi ADIF",
   "Import canceled. The QSOs saved before stay in the GeoPackage: {count}": "Uvoz je otkazan. Veze sačuvane pre toga ostaju u GeoPackage fajlu: {count}",
   "Imported QSOs": "Uvezene veze",
-  "Imported: {imported}, duplicates: {duplicates}, skipped: {skipped}": "Uvezeno: {imported}, duplikata: {duplicates}, preskočeno: {skipped}",
+  "Imported: {imported}, duplicates: {duplicates}, skipped: {skipped}": "Uvezeno: {imported}, duplikati: {duplicates}, preskočeno: {skipped}",
   "Imports an ADIF log ({extension}) into the HamQ GeoPackage: a point for each QSO at the position of the other station (LAT/LON, else the center of the locator in GRIDSQUARE, else the DXCC entity from cty.dat) and the geodesic path from my QTH. QSOs that are already in the GeoPackage (same callsign, minute, band and mode) are skipped as duplicates, so importing the same file again adds nothing. Records without CALL or with an invalid date or time are skipped and reported. My QTH is MY_LAT/MY_LON or MY_GRIDSQUARE of each record, else My QTH locator.": "Uvozi ADIF log ({extension}) u HamQ GeoPackage: za svaku vezu pravi tačku na poziciji druge stanice (LAT/LON, inače centar lokatora iz GRIDSQUARE, inače DXCC entitet iz cty.dat) i geodetsku putanju od mog QTH-a. Veze koje već postoje u GeoPackage fajlu (isti pozivni znak, minut, opseg i vrsta rada) preskaču se kao duplikati, pa ponovni uvoz istog fajla ne dodaje ništa. Zapisi bez CALL ili sa neispravnim datumom ili vremenom se preskaču i prijavljuju. Moj QTH je MY_LAT/MY_LON ili MY_GRIDSQUARE svakog zapisa, inače parametar „Moj QTH lokator“.",
   "Largest ADIF file to read (MB)": "Najveća veličina ADIF fajla (MB)",
   "No ADIF file was given": "ADIF fajl nije zadat",

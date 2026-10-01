@@ -570,7 +570,8 @@ def test_about_box(loaded, monkeypatch):
     def fake_about(parent, title, text):
         shown.append((parent, title, text))
 
-    monkeypatch.setattr(plugin_module.QMessageBox, "about", fake_about)
+    # HamQ's MessageBox names the OK button in the HamQ language (QMessageBox would not).
+    monkeypatch.setattr(plugin_module.MessageBox, "about", staticmethod(fake_about))
     loaded.about_action.trigger()
     assert len(shown) == 1
     parent, title, text = shown[0]
@@ -581,6 +582,7 @@ def test_about_box(loaded, monkeypatch):
     assert f'href="{meta["repository"]}"' in text
     assert "AD1C" in text
     assert "WSJT" in text
+    assert "Hamlib" in text
 
 
 def test_plugin_metadata():

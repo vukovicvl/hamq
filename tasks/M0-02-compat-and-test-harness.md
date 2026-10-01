@@ -221,10 +221,13 @@ Manual checks still needed: none for this task (no GUI beyond M0-01).
     2026-09-27) reports success for a Python `datetime` through the OGR provider and
     stores NULL, like 3.34 to 4.0; 4.2.1 (host) rejects it.
     `tests/qgis/test_fields.py::test_provider_add_features_never_stores_a_python_datetime`
-    asserts the 4.2.1 behaviour for every 4.2 (`>= 40200: assert not ok`) and fails on
-    4.2.3 (1 failed, 1084 passed, 3 skipped in that image). HamQ itself is not affected
-    (it writes datetimes as `to_qdatetime` text through SQLite); the assertion should
-    accept both outcomes from 4.1 on (open, qgis_io tests).
+    asserted the 4.2.1 behaviour for every 4.2 (`>= 40200: assert not ok`) and failed on
+    4.2.3 (1 failed, 1084 passed, 3 skipped in that image), so the CI job on
+    `qgis/qgis:4.2-trixie` would have been red. HamQ itself is not affected (it writes
+    datetimes as `to_qdatetime` text through SQLite). Fixed in the docs pass: from 4.1 on
+    the test accepts both outcomes and asserts only that the time is lost (NULL stored or
+    the feature rejected); `test_fields.py` passes on 4.2.1 (host), 4.2.3, 4.0, 3.44 and
+    3.34, and the whole `tests/qgis` on 4.2.3 with it.
   - Full `tests/qgis` in the release pass: `qgis/qgis:3.34` (3.34.15) and `qgis/qgis:3.40`
     (3.40.15) 1085 passed, 3 skipped each (the two live-Hamlib tests and the privileged
     port check); the `scripts/test_qgis.sh all` results are in INT-01.

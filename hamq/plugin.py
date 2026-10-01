@@ -39,11 +39,12 @@ from typing import TYPE_CHECKING, Any
 
 from qgis.core import QgsApplication, QgsMessageLog, QgsProject
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QDockWidget, QMessageBox, QToolBar
+from qgis.PyQt.QtWidgets import QDockWidget, QToolBar
 
 from .core.i18n import tr, tr_noop
 from .events import events
 from .gui import get_icon
+from .gui.message_box import MessageBox
 from .processing.provider import HamQProvider
 from .qgis_io.compat import DOCK_RIGHT, LOG_PANEL_SHOWS_HTML, MSG_CRITICAL, MSG_WARNING, QAction
 
@@ -636,7 +637,8 @@ class HamQPlugin:
             esc(
                 self.tr(
                     "Amateur radio tools for QGIS: Maidenhead locators, QSO log map, "
-                    "DXCC statistics and live QSOs from WSJT-X."
+                    "DXCC statistics, live QSOs from WSJT-X and radio and rotator "
+                    "control through Hamlib."
                 )
             ),
         ]
@@ -659,18 +661,24 @@ class HamQPlugin:
             + esc(
                 self.tr(
                     "DXCC data: cty.dat by Jim Reisert, AD1C (country-files.com), "
-                    "downloaded on first use and not bundled with the plugin."
+                    "downloaded when you ask for it (offered at the first start) and "
+                    "not bundled with the plugin."
                 )
             )
             + "<br>"
             + esc(self.tr("WSJT-X UDP protocol: Joe Taylor, K1JT, and the WSJT Development Group."))
+            + "<br>"
+            + esc(
+                self.tr("Radio and rotator control: Hamlib rigctld and rotctld (hamlib.github.io).")
+            )
         )
         return "".join(f"<p>{paragraph}</p>" for paragraph in paragraphs)
 
     @_guarded
     def show_about(self, _checked: bool = False) -> None:
         """Show the About box."""
-        QMessageBox.about(self.iface.mainWindow(), self.tr("About HamQ"), self.about_text())
+        # MessageBox names its OK button in the HamQ language (QMessageBox would use Qt's).
+        MessageBox.about(self.iface.mainWindow(), self.tr("About HamQ"), self.about_text())
 
     # ------------------------------------------------------------------
     # Helpers

@@ -400,7 +400,7 @@ def test_messages_are_translated(harness, language):
     harness.qth = None
     harness.tool.aim_at(lonlat(SYDNEY))
     assert harness.messages == [
-        "Podesite svoj QTH lokator u podešavanjima da biste okretali antenu sa mape."
+        "Unesite svoj QTH lokator u podešavanjima da biste antenu okretali klikom na mapu."
     ]
     language("sr_Cyrl")
     harness.qth = KN04FT

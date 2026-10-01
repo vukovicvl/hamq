@@ -49,6 +49,10 @@ jobs:
         run: python -m pip install --disable-pip-version-check pytest
       - name: pytest tests/core (no QGIS)
         run: python -m pytest -p no:cacheprovider tests/core -q
+      - name: Translation catalogs, strict (unused keys fail)
+        env:
+          HAMQ_STRICT_I18N: "1"
+        run: python -m pytest -p no:cacheprovider tests/core/test_i18n_catalog.py -q
 
   qgis-tests:
     name: QGIS tests (${{ matrix.name }})

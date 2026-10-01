@@ -204,9 +204,9 @@ def test_provider_add_features_stores_qdatetime(tmp_gpkg):
 def test_provider_add_features_never_stores_a_python_datetime(tmp_gpkg):
     """Why to_qdatetime() exists on the provider path (gpkg.insert_qsos) too.
 
-    The OGR provider does not convert a Python ``datetime``. QGIS 3.34, 3.40, 3.44
-    and 4.0 report success and silently store NULL; QGIS 4.2 rejects the feature
-    ("wrong data type ... expected QDateTime"). Either way the time is lost.
+    The OGR provider does not convert a Python ``datetime``. QGIS 3.34, 3.40, 3.44,
+    4.0 and 4.2.3 report success and silently store NULL; QGIS 4.2.1 rejects the
+    feature ("wrong data type ... expected QDateTime"). Either way the time is lost.
     """
     ok, stored = _add_through_provider(tmp_gpkg, QSO_TIME)
     if ok:
@@ -216,8 +216,8 @@ def test_provider_add_features_never_stores_a_python_datetime(tmp_gpkg):
         assert stored == []
     if compat.QGIS_VERSION_INT < 40100:
         assert ok  # silent data loss: success reported, NULL stored
-    elif compat.QGIS_VERSION_INT >= 40200:
-        assert not ok
+    # From QGIS 4.1 on the outcome changes between point releases (4.2.1 rejects the
+    # feature, 4.2.3 stores NULL again); only the lost time above is asserted there.
 
 
 def test_to_qdatetime_is_utc():

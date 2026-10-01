@@ -31,7 +31,8 @@ supports unicast and multicast, and reports a busy port clearly. This is the
       `connectionChanged(bool)`, `errorOccurred(str)`, `start()`, `stop()`, `is_running()`,
       `is_connected()`
 - [x] Bind `QHostAddress.SpecialAddress.AnyIPv4` with `ShareAddress | ReuseAddressHint`
-      (compat constants)
+      (compat constants). Release pass: `AnyIPv4` only for `""` / `0.0.0.0`, multicast
+      and broadcast; a unicast address (127.0.0.1 by default) is bound itself (Notes)
 - [x] Multicast address (224.0.0.0/4): bind AnyIPv4 and join the group on every interface
       that is up and can multicast, plus loopback; fall back to the default interface;
       leave the group on `stop()`

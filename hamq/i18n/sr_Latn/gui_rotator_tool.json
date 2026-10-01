@@ -1,6 +1,6 @@
 {
   "Cancel": "Otkaži",
-  "Set your QTH locator in Settings to turn the antenna from the map.": "Podesite svoj QTH lokator u podešavanjima da biste okretali antenu sa mape.",
+  "Set your QTH locator in Settings to turn the antenna from the map.": "Unesite svoj QTH lokator u podešavanjima da biste antenu okretali klikom na mapu.",
   "The clicked point could not be converted to latitude and longitude.": "Kliknutu tačku nije moguće pretvoriti u geografsku širinu i dužinu.",
   "The rotator cannot turn to azimuth {azimuth}: its range is {minimum}° to {maximum}°.": "Rotator ne može da se okrene na azimut {azimuth}: njegov raspon je od {minimum}° do {maximum}°.",
   "The rotator range {minimum}° to {maximum}° is not valid; check it in Settings.": "Raspon rotatora od {minimum}° do {maximum}° nije ispravan; proverite ga u podešavanjima.",
@@ -10,5 +10,5 @@
   "Turn the antenna to azimuth {azimuth} (long path, {distance})? HamQ asks only this first time; later clicks on the map turn the rotator right away.": "Okrenuti antenu na azimut {azimuth} (dugi put, {distance})? HamQ pita samo ovaj put; sledeći klikovi na mapu odmah okreću rotator.",
   "Turn the antenna to azimuth {azimuth} ({distance})? HamQ asks only this first time; later clicks on the map turn the rotator right away.": "Okrenuti antenu na azimut {azimuth} ({distance})? HamQ pita samo ovaj put; sledeći klikovi na mapu odmah okreću rotator.",
   "Turn the rotator": "Okretanje rotatora",
-  "Unexpected error in the rotator map tool: {error}": "Neočekivana greška u alatu za okretanje rotatora sa mape: {error}"
+  "Unexpected error in the rotator map tool: {error}": "Neočekivana greška u alatu za usmeravanje antene klikom na mapu: {error}"
 }

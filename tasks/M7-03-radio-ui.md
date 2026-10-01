@@ -256,10 +256,12 @@ plugin.add_cleanup(tool.cleanup); plugin.add_cleanup(dock.cleanup)
   - Translations: "Point on map" is "Usmeri klikom na mapu" (like the menu action
     "Usmeri antenu klikom na mapu"; the long-path tooltip follows); "RST sent" / "RST
     received" are "Poslati RST" / "Primljeni RST" in the dialog and in the field aliases.
-  - Still open (gui): "Set your QTH locator in Settings to turn the antenna from the
-    map." keeps "Podesite ..." in `gui_rotator_tool.json`, because
-    `tests/qgis/test_rotator_tool.py::test_messages_are_translated` pins that text; the
-    glossary wording "Unesite svoj QTH lokator u podešavanjima da biste antenu okretali
-    klikom na mapu." needs the catalog and that test changed together. The tool's own
-    message-bar fallback (`_show_message`, used when no message callback is given)
-    pushes its text unescaped; the texts are HamQ's own, with numbers only.
+  - "Set your QTH locator in Settings to turn the antenna from the map." is "Unesite
+    svoj QTH lokator u podešavanjima da biste antenu okretali klikom na mapu." (glossary:
+    "set your ..." -> "unesite ..."), changed together with the text that
+    `tests/qgis/test_rotator_tool.py::test_messages_are_translated` pins; the tool's
+    unexpected-error message names it like the menu action ("alat za usmeravanje antene
+    klikom na mapu").
+  - Still open (gui): the tool's own message-bar fallback (`_show_message`, used when no
+    message callback is given) pushes its text unescaped; the texts are HamQ's own, with
+    numbers only.

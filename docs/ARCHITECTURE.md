@@ -52,6 +52,12 @@ scripts/
   test_qgis.sh           runs tests/qgis on local QGIS and Docker images
   make_styles.py         regenerates resources/styles/*.qml (run on QGIS 3.34)
   make_wsjtx_fixtures.py regenerates the WSJT-X golden packets in tests/fixtures/wsjtx
+  make_demo_log.py       writes the fictional demo log docs/demo/demo_log.adi
+  make_screenshots.py    takes the README screenshots (docs/images) with the QGIS desktop
+docs/
+  ARCHITECTURE.md RELEASING.md AGENT_SETUP.md
+  demo/demo_log.adi      150 made-up QSOs from KN04ft (README screenshots, trying HamQ)
+  images/*.png           README screenshots
 ```
 
 ## General rules
@@ -123,6 +129,7 @@ LABELS = {"total": tr_noop("Total QSOs")}       # marked, translated later with 
 | statistics | statistika |
 | panel (dock) | panel |
 | listen / start / stop | slušaj / pokreni / zaustavi |
+| listening (the action the user starts and stops) | slušanje ("Pokreni slušanje", "Slušanje nije pokrenuto") |
 | connected / not connected | povezan / nije povezan |
 | refresh | osveži |
 | download | preuzmi |
@@ -142,11 +149,14 @@ LABELS = {"total": tr_noop("Total QSOs")}       # marked, translated later with 
 | daemon (rigctld, rotctld) | servis |
 | azimuth range (of the rotator) | raspon azimuta |
 | turn (the antenna) / point on map | okreni / usmeri klikom na mapu |
+| rotator map tool | alat za usmeravanje antene klikom na mapu |
+| target (azimuth) / elevation | cilj / elevacija |
 | set (a value on the radio, button) | podesi |
 | set your ... (in the settings) | unesite ... |
 | poll interval | interval očitavanja |
 | extent / level (Processing) | obuhvat / nivo |
 | layer / project / edit mode | sloj / projekat / režim uređivanja |
+| plugin / dialog / tab | dodatak / dijalog / kartica |
 | file / folder / read-only | fajl / fascikla / samo za čitanje |
 | limit (largest allowed value) | granica |
 | share (of the total) | udeo |
@@ -693,12 +703,20 @@ Every widget with text implements `retranslate()` and is connected to
 
 ## Testing
 
-- `python3 -m pytest tests/core -q` (no QGIS needed; default `testpaths`).
+- `python3 -m pytest tests/core -q` (no QGIS needed; default `testpaths`); also on
+  Python 3.9 (`python:3.9-slim`, see `docs/RELEASING.md`).
+- `HAMQ_STRICT_I18N=1 python3 -m pytest tests/core/test_i18n_catalog.py -q` (unused
+  catalog keys fail too).
 - `scripts/test_qgis.sh <target> [pytest args]` runs `tests/qgis`:
   `local` (host QGIS 4.x, Qt6), `3.44` (Docker `qgis/qgis:3.44-trixie`, Qt5),
   `4.0` (Docker `qgis/qgis:4.0-trixie`, Qt6), `3.34` (Docker
-  `camptocamp/qgis-server:3.34`, Qt5, minimum supported version), `all`.
-- `ruff check hamq tests` and `ruff format --check hamq tests`.
+  `camptocamp/qgis-server:3.34`, Qt5, minimum supported version), `all`. Docker runs
+  mount the repository read-only as the calling user, so nothing is written into it.
+- CI (`.github/workflows/ci.yml`): ruff, `tests/core` and the strict catalog check on
+  Python 3.9 and 3.12, and `tests/qgis` on QGIS 3.34 (`qgis/qgis:3.34`), 3.44, 4.0 and
+  4.2 (`qgis/qgis:4.2-trixie`); the plugin zip is built on every push.
+- `ruff check hamq tests scripts` and `ruff format --check hamq tests scripts`.
+- Releases: `docs/RELEASING.md` (`python3 scripts/package.py --release`).
 
 ## Contract changes
 

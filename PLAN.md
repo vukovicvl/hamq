@@ -35,7 +35,7 @@ Radio amater uveze svoj ADIF log i za par minuta vidi sve svoje veze na mapi, sa
 
 | Tema | Odluka |
 |---|---|
-| QGIS verzije | Min 3.34 (Qt5), do 4.x (Qt6): `qgisMaximumVersion=4.99`, `supportsQt6=True`. Automatski testovi na 3.34, 3.40, 3.44 (Qt5), 4.0 i 4.2 (Qt6) |
+| QGIS verzije | Min 3.34 (Qt5), do 4.x (Qt6): `qgisMaximumVersion=4.99`, `supportsQt6=True`. Automatski testovi (CI i `scripts/test_qgis.sh`) na 3.34, 3.44 (Qt5), 4.0 i 4.2 (Qt6); pre izdanja ceo skup QGIS testova i na 3.40 (Docker `qgis/qgis:3.40`) |
 | Qt importi | Isključivo `from qgis.PyQt...`, nikad direktno PyQt5/PyQt6 |
 | Zavisnosti | Nula spoljnih paketa. Samo stdlib + ono što dolazi uz QGIS |
 | Arhitektura | `core/` je čist Python bez `qgis` importa, testira se sa pytest |
@@ -134,7 +134,7 @@ Svaka faza ima svoj task fajl u `tasks/`. Faza je gotova kad su ispunjeni kriter
 - Prekidač jezika u toolbar-u, meniju i podešavanjima (EN / SR latinica / SR ćirilica); menja meni, panel, dijaloge, Processing algoritme i nazive polja odmah, bez restarta
 - Paket za plugins.qgis.org, provera `metadata.txt`
 - **Gotovo kad:** zip prolazi validaciju repozitorijuma, instalacija iz zip-a radi na čistom profilu
-- **Stanje:** prevod, prekidač jezika i paket urađeni (`tasks/M6-01`, `M6-02`, `INT-01`); ostaje izdanje: README sa uputstvom i slikama ekrana, CHANGELOG za 0.1.0, `changelog` u `metadata.txt`, otpremanje na plugins.qgis.org
+- **Stanje:** prevod, prekidač jezika, paket i `changelog` u `metadata.txt` urađeni (`tasks/M6-01`, `M6-02`, `INT-01`); README sa uputstvom i slikama ekrana, probni log i CHANGELOG za 0.1.0 urađeni (`tasks/M6-03`); postupak izdanja je u `docs/RELEASING.md`. Ostaje objavljivanje: tag `v0.1.0`, izdanje na GitHub-u i otpremanje na plugins.qgis.org
 
 ### M7. Hamlib radio i rotator (1,5 dan)
 - `core/hamlib.py`: komande i parser proširenih odgovora (`+f`, `+m`, `+F`, `+M`, `+p`, `+P`, `+S`), Hamlib kodovi grešaka, preslikavanje azimuta na opseg rotatora (npr. 0-450)

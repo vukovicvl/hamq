@@ -55,7 +55,9 @@ leaves nothing behind.
 - [x] `plugin.py`: Show HamQ panel (checkable, follows the dock), Import ADIF..., Listen to
       WSJT-X (checkable), Log QSO..., Point antenna on map (checkable), Azimuthal map
       (checkable), Maidenhead grid..., Locator to point..., Recalculate distances and
-      paths..., Download cty.dat, Settings..., Language submenu, About; toolbar: panel,
+      DXCC data... (named like the algorithm since the release pass; "Recalculate
+      distances and paths..." before), Download cty.dat, Settings..., Language submenu,
+      About; toolbar: panel,
       import, listen, point, azimuthal, settings | locator search | EN/SR/СР switch.
       Processing dialogs through `processing.execAlgorithmDialog` (imported lazily).
 - [x] Language switch updates actions, menus, dock, toolbar widgets, open dialogs, hints,
@@ -196,6 +198,47 @@ taken after `gc.collect()` and the deferred deletes.
   passband (`+M <mode> 0`).
 - Dynamic texts that the listener / clients / cty manager produced before a language switch
   (errors in the dock, transient message bar items) stay in the old language (M5-03 note).
+  Since the release pass the listener and the Hamlib clients offer `current_error()` (the
+  problem translated again); `_on_language_changed` does not call it yet (open, see M5-03).
+- **Release pass (2026-10-01)** (plugin / controller fixer; the "after" column of the
+  smoke below was measured on the fixed code in the docs pass):
+  - **Full unload:** `classFactory` imports every subpackage by name (`core`, `gui`, `net`,
+    `processing`, `qgis_io`), so QGIS records them and `unloadPlugin` removes all HamQ
+    modules. Before, `hamq.processing` stayed in `sys.modules`, kept the modules of the old
+    load alive and was reused by the next load (a plugin upgrade ran stale code).
+  - **Tooltips follow the language:** at startup QGIS's shortcuts manager turns the tooltip
+    of every main-window action into fixed text (`<b>Log QSO</b>`). The six actions without
+    a tooltip of their own (Log QSO, Maidenhead grid, Locator to point, Recalculate,
+    Download cty.dat, About) kept that English text after a switch; `_apply_texts` now
+    always sets the tooltip (an empty one lets Qt show the current text).
+  - **Plain text:** texts pushed to the message bar are HTML-escaped (calls, client ids
+    and errors from files or the network never become links); controller and plugin log
+    lines are escaped where `compat.LOG_PANEL_SHOWS_HTML` (QGIS 3.34 to 3.40.6, 3.42.0 /
+    3.42.1). Still open (net, qgis_io, gui): their own log lines and the three
+    `pushMessage` calls of `gui/azimuthal.py`, `gui/locator_search.py` and the rotator
+    tool's fallback.
+  - A QSO that cannot be saved is reported once, with the warning of `insert_qsos` (it
+    names the QSO and the cause), not wrapped in a second "could not be saved".
+  - The menu entry is "Recalculate distances and DXCC data...", the algorithm's name.
+  - Real desktop smoke, host QGIS 4.2.1 (`qgis --code`, offscreen, temporary profile; a
+    scratch script switches to Serbian, sends a WSJT-X record whose CALL is an `<a href>`
+    link and a client id with a link, then unloads and loads the plugin three times):
+
+    | check | before the fixes | after |
+    |---|---|---|
+    | Serbian tooltips still `<b>English</b>` | 6 of 12 | 0 of 12 |
+    | live links in HamQ message bar items | 2 | 0 (markup shown as text) |
+    | HamQ modules in `sys.modules` after each unload | `hamq.processing` | none |
+    | modules of the old load still alive after each unload | 23 | 0 |
+    | load + start after each unload | OK | OK |
+  - Test runs at the end of the release pass (docs pass, all fixes in):
+    `scripts/test_qgis.sh all -q -p no:cacheprovider -k "language or dock or
+    settings_dialog or processing or integration or rotator_tool"`: local 4.2.1 339
+    passed, 3.44 339 passed, 4.0 339 passed, 3.34 (`camptocamp/qgis-server`) 337 passed
+    and 2 skipped (QtSvg, `qgis_process` lacks a library in that image). Whole
+    `tests/qgis`: host 4.2.1 1086 passed, 2 skipped; `qgis/qgis:3.34` (3.34.15),
+    `qgis/qgis:3.40` (3.40.15) and `qgis/qgis:4.2-trixie` (4.2.3, after the
+    `test_fields.py` fix of M0-02) 1085 passed, 3 skipped each.
 - **CHANGELOG.md** (not edited): "Plugin wiring: HamQ menu and toolbar with every action,
   panel, live WSJT-X QSOs on the map with a message, Hamlib radio and rotator from the
   panel and the map, manual QSO entry, first-run hints for cty.dat and the QTH locator,
