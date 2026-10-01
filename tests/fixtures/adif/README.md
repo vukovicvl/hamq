@@ -50,6 +50,8 @@ as bytes (`read_adi`), never with text-mode newline translation.
 | FT4 as `MODE=MFSK SUBMODE=FT4` | `wsjtx_log.adi` 4 and 5 |
 | Band only as uppercase `20M` / `40M` / `15M` | `n1mm.adi` |
 | Same QSO from two sources (re-import / dedup): `lotw.adi` 1 and 2 confirm `wsjtx_log.adi` 2 and 4; FT4 is `MODE=FT4` in LoTW and `MODE=MFSK SUBMODE=FT4` in WSJT-X, same dedup key | `lotw.adi`, `wsjtx_log.adi` |
+| SSB without a submode (the same QSOs with `SUBMODE` USB / LSB are synthetic records in `test_qso.py`: one dedup key, `SSB`) | `log4om.adi` 1 and 2 |
+| PSK31 as `MODE=PSK31` (ADIF 2; dedup key `PSK`, like `MODE=PSK SUBMODE=PSK31` and `MODE=PSK`) | `xlog.adi` 3 (`DL7XYZ`) |
 | QSO with DXCC data already filled in by the logger | `log4om.adi`, `qrz_export.adi` 1 and 2, `lotw.adi` |
 | User-defined fields (`SEQ (S)`, `SEQ (R)`) for `adif_extra` | `xlog.adi` 1 and 2 |
 

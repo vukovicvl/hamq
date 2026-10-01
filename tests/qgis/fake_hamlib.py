@@ -38,12 +38,18 @@ Switches that make it misbehave (set them at any time):
   connections refused), :meth:`restart` (back on the same port).
 
 :attr:`received` lists every command line received, in order.
+
+:class:`ThreadedFakeHamlib` answers from its own thread instead, so it keeps
+answering while a test blocks the Qt (main) thread, as a real daemon does.
 """
 
 from __future__ import annotations
 
+import socket as pysocket
+import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 
 from qgis.PyQt.QtCore import QCoreApplication, QEvent, QObject, QTimer
 from qgis.PyQt.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
@@ -328,3 +334,128 @@ class FakeHamlib(QObject):
             socket.flush()
         except RuntimeError:  # deleted meanwhile
             pass
+
+
+class ThreadedFakeHamlib:
+    """A minimal ``rigctld`` / ``rotctld`` on 127.0.0.1 that answers from its own threads.
+
+    :class:`FakeHamlib` shares the test's Qt event loop, so it cannot answer while the
+    test blocks the Qt (GUI) thread. This one uses plain Python sockets and one thread
+    per connection, so the replies arrive while the GUI thread is blocked, as with the
+    real daemons. It answers ``+f``, ``+m``, ``+F``, ``+M <mode> <passband>`` (rig) or
+    ``+p``, ``+P``, ``+S`` (rotator) in the formats of :class:`FakeHamlib`, and nothing
+    else.
+    """
+
+    def __init__(self, kind: str = "rig") -> None:
+        if kind not in ("rig", "rot"):
+            raise ValueError(f"kind must be 'rig' or 'rot', not {kind!r}")
+        self.kind = kind
+        self.received: list[str] = []
+        self.connections = 0
+        self.freq_hz = 14074000
+        self.mode = "USB"
+        self.passband = 2400
+        self.azimuth = 123.0
+        self.elevation = 0.0
+        self.port = 0
+        self._lock = threading.Lock()
+        self._stopped = threading.Event()
+        self._server: pysocket.socket | None = None
+        self._clients: list[pysocket.socket] = []
+        self._threads: list[threading.Thread] = []
+
+    def start(self) -> int:
+        """Listen on a free 127.0.0.1 port; return the port."""
+        server = pysocket.socket(pysocket.AF_INET, pysocket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(8)
+        server.settimeout(0.05)
+        self._server = server
+        self.port = server.getsockname()[1]
+        self._spawn(self._accept, server)
+        return self.port
+
+    def stop(self) -> None:
+        """Close the server and every connection; wait for the threads."""
+        self._stopped.set()
+        with self._lock:
+            sockets = [s for s in (self._server, *self._clients) if s is not None]
+            self._server, self._clients = None, []
+        for sock in sockets:
+            with suppress(OSError):
+                sock.close()
+        for thread in self._threads:
+            thread.join(2.0)
+
+    def _spawn(self, target: Callable[[pysocket.socket], None], sock: pysocket.socket) -> None:
+        thread = threading.Thread(target=target, args=(sock,), daemon=True)
+        self._threads.append(thread)
+        thread.start()
+
+    def _accept(self, server: pysocket.socket) -> None:
+        while not self._stopped.is_set():
+            try:
+                client, _address = server.accept()
+            except pysocket.timeout:
+                continue
+            except OSError:
+                return
+            client.settimeout(0.05)
+            with self._lock:
+                self.connections += 1
+                self._clients.append(client)
+            self._spawn(self._serve, client)
+
+    def _serve(self, client: pysocket.socket) -> None:
+        buffer = b""
+        while not self._stopped.is_set():
+            try:
+                data = client.recv(4096)
+            except pysocket.timeout:
+                continue
+            except OSError:
+                return
+            if not data:
+                return
+            *lines, buffer = (buffer + data).split(b"\n")
+            for raw in lines:
+                line = raw.decode("utf-8", "replace").rstrip("\r")
+                with self._lock:
+                    self.received.append(line)
+                    reply = self._answer(line)
+                if reply is not None:
+                    try:
+                        client.sendall(reply.encode("utf-8"))
+                    except OSError:
+                        return
+
+    def _answer(self, line: str) -> str | None:
+        if len(line) < 2 or not line.startswith("+"):
+            return None
+        letter, args = line[1], line[2:].strip()
+        if self.kind == "rig":
+            if letter == "f":
+                return f"get_freq:\nFrequency: {self.freq_hz}\nRPRT 0\n"
+            if letter == "m":
+                return f"get_mode:\nMode: {self.mode}\nPassband: {self.passband}\nRPRT 0\n"
+            if letter == "F":
+                self.freq_hz = int(float(args))
+                return f"set_freq: {args}\nRPRT 0\n"
+            if letter == "M":
+                mode, width = args.split()
+                self.mode = mode
+                if int(width) > 0:
+                    self.passband = int(width)
+                return f"set_mode: {args}\nRPRT 0\n"
+            return None
+        if letter == "p":
+            return (
+                f"get_pos:\nAzimuth: {self.azimuth:.2f}\nElevation: {self.elevation:.2f}\nRPRT 0\n"
+            )
+        if letter == "P":
+            self.azimuth, self.elevation = (float(part) for part in args.split())
+            return f"set_pos: {args}\nRPRT 0\n"
+        if letter == "S":
+            return "stop:\nRPRT 0\n"
+        return None

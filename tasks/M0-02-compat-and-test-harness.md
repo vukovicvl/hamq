@@ -210,3 +210,21 @@ Manual checks still needed: none for this task (no GUI beyond M0-01).
   geometry); the OGR / GeoPackage provider honors it. Tests use a GeoPackage.
 - `qgis.PyQt.QtGui.QAction` exists on QGIS 3.34 too (QGIS re-exports it), but
   `QActionGroup` does not: use `compat.QActionGroup` for language menus.
+- **Release pass (2026-10-01):**
+  - New compat names (docs/ARCHITECTURE.md "Contract changes"): `TEXT_PLAIN`,
+    `LOG_PANEL_SHOWS_HTML` (QGIS 3.34 to 3.40.6 and 3.42.0 / 3.42.1 render Log Messages
+    as HTML), `SOCKET_ERROR_CONNECTION_REFUSED`, `SOCKET_ERROR_HOST_NOT_FOUND`,
+    `SOCKET_ERROR_TIMEOUT`, `SOCKET_ERROR_ADDRESS_NOT_AVAILABLE`, `NET_CONNECTION_REFUSED`,
+    `NET_HOST_NOT_FOUND`, `NET_TIMEOUT`, `NET_TEMPORARY_NETWORK_FAILURE`,
+    `NET_NETWORK_SESSION_FAILED`, `NET_UNKNOWN_NETWORK_ERROR`, each with a test.
+  - Contract request 1 above moved again: QGIS 4.2.3 (`qgis/qgis:4.2-trixie`, image of
+    2026-09-27) reports success for a Python `datetime` through the OGR provider and
+    stores NULL, like 3.34 to 4.0; 4.2.1 (host) rejects it.
+    `tests/qgis/test_fields.py::test_provider_add_features_never_stores_a_python_datetime`
+    asserts the 4.2.1 behaviour for every 4.2 (`>= 40200: assert not ok`) and fails on
+    4.2.3 (1 failed, 1084 passed, 3 skipped in that image). HamQ itself is not affected
+    (it writes datetimes as `to_qdatetime` text through SQLite); the assertion should
+    accept both outcomes from 4.1 on (open, qgis_io tests).
+  - Full `tests/qgis` in the release pass: `qgis/qgis:3.34` (3.34.15) and `qgis/qgis:3.40`
+    (3.40.15) 1085 passed, 3 skipped each (the two live-Hamlib tests and the privileged
+    port check); the `scripts/test_qgis.sh all` results are in INT-01.

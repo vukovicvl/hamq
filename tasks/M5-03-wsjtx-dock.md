@@ -99,5 +99,14 @@ the listener runs.
 - **Error texts are dynamic.** The `set_*_error` texts come translated from the listener
   or the clients. `retranslate()` cannot translate them again, so after a language
   switch an error shown earlier stays in the old language until it changes or clears.
+  Release pass: the listener and the Hamlib clients now offer `current_error()` (the
+  problem translated again in the current language), but the controller does not call it
+  on a language switch yet, so the limitation stays (open, controller: show
+  `rig.current_error()`, `rotator.current_error()` and `listener.current_error()` again in
+  `_on_language_changed`, only while the dock shows an error from that client).
+- **Release pass (2026-10-01)** (GUI fixer): every label of the panel shows plain text
+  (`compat.TEXT_PLAIN`), and tooltips that contain outside text (client names, DX calls,
+  errors) are escaped, so markup in a callsign or a client id from the network is shown
+  as it is, never rendered or turned into a link.
 - The tab never stops or starts anything itself. The button only emits
   `listenToggled`, and the controller confirms with `set_listening`.

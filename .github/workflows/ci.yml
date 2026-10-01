@@ -56,15 +56,38 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # "target": a Docker target of scripts/test_qgis.sh (the same run as locally).
+        # "image": a QGIS image that script has no target for yet; it is run the same
+        # way (read-only checkout, own user, offscreen, no files written).
         include:
+          - image: "qgis/qgis:3.34"
+            name: QGIS 3.34 (minimum), Qt5, qgis/qgis:3.34
           - target: "3.44"
             name: QGIS 3.44, Qt5, qgis/qgis:3.44-trixie
           - target: "4.0"
             name: QGIS 4.0, Qt6, qgis/qgis:4.0-trixie
+          - image: "qgis/qgis:4.2-trixie"
+            name: QGIS 4.2, Qt6, qgis/qgis:4.2-trixie
     steps:
       - uses: actions/checkout@v7
-      - name: Run tests/qgis in Docker
+      - name: Run tests/qgis in Docker (scripts/test_qgis.sh)
+        if: matrix.target
         run: bash scripts/test_qgis.sh "${{ matrix.target }}" -ra
+      - name: Run tests/qgis in Docker (${{ matrix.image }})
+        if: matrix.image
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e QT_QPA_PLATFORM=offscreen \
+            -e XDG_RUNTIME_DIR=/tmp/xdg \
+            -v "$PWD":/app:ro \
+            -w /app \
+            "$IMAGE" \
+            sh -c 'mkdir -p /tmp/xdg && chmod 700 /tmp/xdg && exec python3 -m pytest -p no:cacheprovider tests/qgis -ra'
 
   package:
     name: Plugin zip
@@ -75,6 +98,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      # A release zip is built with --release (CHANGELOG section, metadata changelog,
+      # committed sources), see docs/RELEASING.md.
       - name: Build dist/hamq-<version>.zip
         run: python scripts/package.py --output-dir dist
       - uses: actions/upload-artifact@v7

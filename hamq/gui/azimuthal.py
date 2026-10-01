@@ -16,12 +16,21 @@ removed. A new locator saved in the settings re-centres an enabled map.
 :attr:`AzimuthalMap.enabledChanged` reports every change, e.g. to keep a checkable
 action in sync. :meth:`AzimuthalMap.cleanup` disables the map and disconnects; it
 is safe to call twice.
+
+The helper is a memory layer that HamQ can always make again, so it carries the custom
+property ``skipMemoryLayersCheck``: QGIS then does not warn that "temporary scratch
+layers" will be lost when QGIS quits or another project is opened. A project saved
+while the map is on keeps the helper layer but not its features; the helper also
+carries the map's state (:data:`STATE_PROPERTY`: locator, the CRS and view to restore),
+so opening that project switches the map on again: the rings and lines are drawn
+again and switching off restores the CRS and view from before the map.
 """
 
 from __future__ import annotations
 
 import contextlib
 import functools
+import json
 import math
 import traceback
 from collections.abc import Callable, Iterator
@@ -62,6 +71,7 @@ __all__ = [
     "RING_KIND",
     "RING_MAX_KM",
     "RING_STEP_KM",
+    "STATE_PROPERTY",
     "AzimuthalMap",
     "azimuths",
     "ring_distances",
@@ -82,6 +92,12 @@ RING_KIND, AZIMUTH_KIND = "ring", "azimuth"
 HELPER_FIELDS = (("kind", "text"), ("value", "real"), ("label", "text"))
 #: Seconds the "set a valid locator" warning stays in the message bar.
 MESSAGE_SECONDS = 8
+#: Custom property of the helper layer: JSON ``{"locator", "restore_crs",
+#: "restore_extent", "created_group"}``, saved with a project, read when it is opened.
+STATE_PROPERTY = "hamq/azimuthal"
+#: Custom property QGIS reads before closing a project: no "scratch layers will be
+#: lost" question for a memory layer that has it (HamQ makes the helper again).
+SKIP_MEMORY_CHECK = "skipMemoryLayersCheck"
 _RING_VERTICES = 360  # one vertex per degree: a smooth circle at every scale
 _LINE_COLOR = "110,110,110,200"
 _LABEL_COLOR = QColor(60, 60, 60)
@@ -167,6 +183,58 @@ def _style(layer: QgsVectorLayer) -> None:
     layer.setLabelsEnabled(True)
 
 
+def _crs_text(crs: QgsCoordinateReferenceSystem | None) -> str:
+    """A CRS for the saved state: the id of a registered CRS (``EPSG:3857``), else its
+    WKT (a user CRS id means nothing on another computer); ``""`` for no CRS."""
+    if crs is None or not crs.isValid():
+        return ""
+    authid = crs.authid()
+    if authid and not authid.upper().startswith("USER:"):
+        return authid
+    return crs.toWkt()
+
+
+def _crs_from_text(text: object) -> QgsCoordinateReferenceSystem | None:
+    """Inverse of :func:`_crs_text`; an invalid CRS for ``""``, None when unreadable."""
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    if not text:
+        return QgsCoordinateReferenceSystem()  # the project had no CRS
+    if "[" in text:
+        crs = QgsCoordinateReferenceSystem.fromWkt(text)
+    else:
+        crs = QgsCoordinateReferenceSystem(text)
+    return crs if crs.isValid() else None
+
+
+def _state_of(layer: QgsVectorLayer) -> dict[str, Any]:
+    """The JSON state (:data:`STATE_PROPERTY`) of a saved helper, ``{}`` when unreadable."""
+    try:
+        state = json.loads(layer.customProperty(STATE_PROPERTY))
+    except (TypeError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _extent_list(extent: QgsRectangle | None) -> list[float] | None:
+    if extent is None or extent.isEmpty() or not extent.isFinite():
+        return None
+    return [extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum()]
+
+
+def _extent_from_list(values: object) -> QgsRectangle | None:
+    if not isinstance(values, list) or len(values) != 4:
+        return None
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in values):
+        return None
+    numbers = [float(value) for value in values]
+    if not all(math.isfinite(number) for number in numbers):
+        return None
+    extent = QgsRectangle(*numbers)
+    return None if extent.isEmpty() else extent
+
+
 class AzimuthalMap(QObject):
     """Switch the project to an azimuthal equidistant map centred on my QTH and back."""
 
@@ -192,6 +260,7 @@ class AzimuthalMap(QObject):
         project = QgsProject.instance()
         for signal, slot in (
             (project.cleared, self._on_project_cleared),
+            (project.readProject, self._on_project_read),
             (project.crsChanged, self._on_crs_changed),
             (events().settingsChanged, self._on_settings_changed),
             (events().languageChanged, self._on_language_changed),
@@ -408,18 +477,108 @@ class AzimuthalMap(QObject):
         layer.dataProvider().addFeatures(list(_helper_features(layer)))
         layer.updateExtents()
         _style(layer)
+        layer.setCustomProperty(SKIP_MEMORY_CHECK, 1)
         return layer
 
     def _add_layer(self, layer: QgsVectorLayer) -> None:
         project = QgsProject.instance()
-        project.addMapLayer(layer, False)
         root = project.layerTreeRoot()
         group = root.findGroup(GROUP_NAME)
         if group is None:
             group = root.insertGroup(0, GROUP_NAME)
             self._created_group = True
+        layer.setCustomProperty(STATE_PROPERTY, self._state_text())
+        project.addMapLayer(layer, False)
         group.addLayer(layer)
         self._layer_id = layer.id()
+
+    def _state_text(self) -> str:
+        """The map's state for :data:`STATE_PROPERTY` (saved with a project)."""
+        state = {
+            "locator": self._grid,
+            "restore_crs": _crs_text(self._saved_crs),
+            "restore_extent": _extent_list(self._saved_extent),
+            "created_group": self._created_group,
+        }
+        return json.dumps(state, sort_keys=True)
+
+    def _saved_state(self, layer: QgsVectorLayer) -> dict[str, Any] | None:
+        """The state of a helper read from a project, None when the map cannot go on.
+
+        The map goes on only when the project CRS is still the azimuthal CRS of the
+        saved locator and the layer has the helper's fields.
+        """
+        state = _state_of(layer)
+        try:
+            locator = maidenhead.normalize(str(state.get("locator", "")))
+        except ValueError:
+            return None
+        if [field.name() for field in layer.fields()] != [name for name, _ in HELPER_FIELDS]:
+            return None
+        crs = QgsCoordinateReferenceSystem.fromProj(aeqd_proj(*maidenhead.to_latlon(locator)))
+        if not crs.isValid() or QgsProject.instance().crs() != crs:
+            return None
+        return {
+            "locator": locator,
+            "crs": crs,
+            "restore_crs": _crs_from_text(state.get("restore_crs")),
+            "restore_extent": _extent_from_list(state.get("restore_extent")),
+            "created_group": state.get("created_group") is True,
+        }
+
+    def _take_saved_map(self) -> None:
+        """Switch the map on again in a project that was saved with it.
+
+        A project keeps a memory layer's fields but not its features: the helper is
+        filled again. Other saved helpers that are empty (left over, e.g. the CRS was
+        changed in a QGIS without HamQ) are removed; layers with features are kept.
+        """
+        project = QgsProject.instance()
+        helpers = [
+            layer
+            for layer in project.mapLayers().values()
+            if isinstance(layer, QgsVectorLayer)
+            and layer.providerType() == "memory"
+            and layer.customProperty(STATE_PROPERTY) is not None
+            and layer.id() != self._layer_id
+        ]
+        taken: tuple[QgsVectorLayer, dict[str, Any]] | None = None
+        if not self._enabled:
+            for layer in helpers:
+                state = self._saved_state(layer)
+                if state is not None:
+                    taken = (layer, state)
+                    break
+        created_group = False
+        for layer in helpers:
+            if (taken is None or layer is not taken[0]) and layer.featureCount() == 0:
+                created_group |= _state_of(layer).get("created_group") is True
+                project.removeMapLayer(layer.id())
+        if created_group:
+            self._remove_group_if_empty()
+        if taken is None:
+            return
+        layer, state = taken
+        if layer.featureCount() == 0:
+            layer.dataProvider().addFeatures(list(_helper_features(layer)))
+            layer.updateExtents()
+        layer.setCustomProperty(SKIP_MEMORY_CHECK, 1)
+        group = project.layerTreeRoot().findGroup(GROUP_NAME)
+        restore_crs = state["restore_crs"]
+        self._layer_id = layer.id()
+        self._crs = state["crs"]
+        self._grid = state["locator"]
+        self._saved_crs = restore_crs
+        self._saved_canvas_crs = (
+            QgsCoordinateReferenceSystem(restore_crs) if restore_crs is not None else None
+        )
+        self._saved_extent = state["restore_extent"]
+        self._created_group = state["created_group"] and (
+            group is not None and group.findLayer(layer.id()) is not None
+        )
+        self._enabled = True
+        layer.setName(self._layer_name(self._grid))  # maybe saved in another language
+        self.enabledChanged.emit(True)
 
     def _remove_layer(self) -> None:
         layer_id, self._layer_id = self._layer_id, None
@@ -428,11 +587,15 @@ class AzimuthalMap(QObject):
             project.removeMapLayer(layer_id)
         if self._created_group:
             self._created_group = False
-            group = project.layerTreeRoot().findGroup(GROUP_NAME)
-            if group is not None and not group.children():
-                parent = group.parent()
-                if parent is not None:
-                    parent.removeChildNode(group)
+            self._remove_group_if_empty()
+
+    @staticmethod
+    def _remove_group_if_empty() -> None:
+        group = QgsProject.instance().layerTreeRoot().findGroup(GROUP_NAME)
+        if group is not None and not group.children():
+            parent = group.parent()
+            if parent is not None:
+                parent.removeChildNode(group)
 
     def _warn(self, text: str) -> None:
         bar = self._iface.messageBar()
@@ -450,6 +613,10 @@ class AzimuthalMap(QObject):
         self._forget()
         if was_enabled:
             self.enabledChanged.emit(False)
+
+    @_guarded
+    def _on_project_read(self, *_args: Any) -> None:
+        self._take_saved_map()
 
     @_guarded
     def _on_crs_changed(self) -> None:

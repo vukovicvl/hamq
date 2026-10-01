@@ -51,7 +51,7 @@ from ..events import events
 from ..qgis_io import compat
 from ..qgis_io.fields import from_qdatetime
 from . import get_icon
-from .dock import decimal_separator, format_number
+from .dock import decimal_separator, format_number, hamq_locale
 
 __all__ = ["QsoDialog"]
 
@@ -254,6 +254,9 @@ class QsoDialog(QDialog):
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
+        # The problems repeat what was typed: no label renders markup (default AutoText).
+        for label in self.findChildren(QLabel):
+            label.setTextFormat(compat.TEXT_PLAIN)
 
     def _prefill(self) -> None:
         self._when_edit.setDateTime(_utc_now_minute())
@@ -486,6 +489,12 @@ class QsoDialog(QDialog):
             self._captions[key].setText(text)
         self._now_button.setText(tr("Now"))
         self._now_button.setToolTip(tr("Set the current UTC time"))
+        # the date popup names months and days in the HamQ language, not the system one
+        locale = hamq_locale()
+        self._when_edit.setLocale(locale)
+        calendar = self._when_edit.calendarWidget()
+        if calendar is not None:
+            calendar.setLocale(locale)
         self._freq_edit.setPlaceholderText(format_number(14.074, 3))
         self._mode_hint.setText(
             tr(

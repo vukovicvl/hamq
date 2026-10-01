@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import functools
 import gc
+import os
 import shutil
 import socket
 import time
@@ -26,10 +27,17 @@ from qgis.core import (
     QgsProject,
     QgsRectangle,
 )
-from qgis.gui import QgsMapMouseEvent
+from qgis.gui import QgsMapMouseEvent, QgsMessageLogViewer
 from qgis.PyQt import sip
 from qgis.PyQt.QtCore import QEvent, QPoint, Qt, QTimer
-from qgis.PyQt.QtWidgets import QPushButton, QTabWidget, QWidget
+from qgis.PyQt.QtWidgets import (
+    QPlainTextEdit,
+    QPushButton,
+    QTabWidget,
+    QTextBrowser,
+    QTextEdit,
+    QWidget,
+)
 
 import hamq
 from hamq import controller as controller_module
@@ -60,6 +68,11 @@ LIVE_ADIF = (
     "<band:3>20m <freq:9>14.075123 <station_callsign:5>YU1QQ <my_gridsquare:6>KN04ft <EOR>"
 )
 SYDNEY = QgsPointXY(151.2093, -33.8688)
+#: Markup from the network: a DX call in a Logged ADIF record and a WSJT-X client id.
+EVIL_CALL = "<a href=https://evil.example/x>click me</a>"
+EVIL_CLIENT = (
+    '<a href="https://evil.example/hamq-update">HamQ: security update required, click here</a>'
+)
 MENU_SOURCES = [
     "Show HamQ panel",
     "Import ADIF...",
@@ -69,7 +82,7 @@ MENU_SOURCES = [
     "Azimuthal map",
     "Maidenhead grid...",
     "Locator to point...",
-    "Recalculate distances and paths...",
+    "Recalculate distances and DXCC data...",
     "Download cty.dat",
     "Settings...",
     None,  # the language submenu: SWITCH_TITLE in every language
@@ -152,6 +165,31 @@ def both_connected(rig, rotator) -> bool:
 
 def no_problems(log_messages) -> list:
     return [m for m in log_messages if m[2] in (compat.MSG_WARNING, compat.MSG_CRITICAL)]
+
+
+def links(widget) -> list[str]:
+    """Targets of the links in the document of a text widget."""
+    found = []
+    block = widget.document().begin()
+    while block.isValid():
+        fragments = block.begin()
+        while not fragments.atEnd():
+            char_format = fragments.fragment().charFormat()
+            if char_format.isAnchor():
+                found.append(char_format.anchorHref())
+            fragments += 1
+        block = block.next()
+    return found
+
+
+def bar_browsers(iface) -> list:
+    """The widgets that show the message bar items: QGIS renders each text as HTML."""
+    return [item.findChild(QTextBrowser) for item in iface.messageBar().items()]
+
+
+def log_panel_views(viewer) -> list:
+    """The text views of a Log Messages panel (one tab per tag)."""
+    return viewer.findChildren(QPlainTextEdit) + viewer.findChildren(QTextEdit)
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -394,6 +432,71 @@ def test_unreadable_wsjtx_qso_is_reported(env, load_plugin, iface):
     assert controller.handle_logged_adif("JTDX", "garbage") == 0
     assert "JTDX sent a logged QSO without an ADIF record" in bar_texts(iface)
     assert gpkg.read_qso_rows(env.settings.gpkg_path) == []
+
+
+def test_markup_from_the_network_is_shown_as_text(env, load_plugin, iface):
+    """A DX call or a client id from a WSJT-X datagram is shown as the text it is.
+
+    QGIS renders message bar texts as HTML, and so does the Log Messages panel of QGIS
+    3.34 to 3.40.6 and 3.42.0 / 3.42.1; a click on a link there opens the browser. Markup
+    in a datagram must never become a link."""
+    viewer = QgsMessageLogViewer()  # the Log Messages panel; made before the messages
+    plugin = load_plugin()
+    controller = plugin.controller
+    plugin.listen_action.trigger()
+    items_before = len(iface.messageBar().items())
+    adif = LIVE_ADIF.replace("<call:6>VK2XYZ ", f"<call:{len(EVIL_CALL)}>{EVIL_CALL} ")
+    send(env.settings.wsjtx_port, wsjtx.encode_logged_adif("WSJT-X", adif))
+    assert wait_until(lambda: len(iface.messageBar().items()) > items_before, 2.0)
+    assert controller.handle_logged_adif(EVIL_CLIENT, "garbage") == 0
+    try:
+        bar = [browser.toPlainText() for browser in bar_browsers(iface)]
+        assert [link for browser in bar_browsers(iface) for link in links(browser)] == []
+        client_message = f"{EVIL_CLIENT} sent a logged QSO without an ADIF record"
+        assert any(text.endswith(client_message) for text in bar), bar
+        # every message about the call shows its markup
+        about_call = [text for text in bar if "CLICK ME" in text.upper()]
+        assert all(EVIL_CALL.upper() in text.upper() for text in about_call), about_call
+        if gpkg.read_qso_rows(env.settings.gpkg_path):  # saved: "New QSO: <A HREF=...>..."
+            assert any(f"New QSO: {EVIL_CALL.upper()} 20m FT8" in text for text in bar), bar
+        views = log_panel_views(viewer)
+        assert [link for view in views for link in links(view)] == []
+        assert client_message in "\n".join(view.toPlainText() for view in views)
+    finally:
+        viewer.deleteLater()
+
+
+def test_qso_that_could_not_be_saved_is_reported_once(env, load_plugin, iface):
+    """A live QSO the log cannot take: one message that names the QSO and the cause."""
+    plugin = load_plugin()
+    controller = plugin.controller
+    path = env.settings.gpkg_path
+    assert controller.ensure_storage()
+    os.chmod(path, 0o444)
+    try:
+        if os.access(path, os.W_OK):
+            pytest.skip("a read-only file is writable for this user (root)")
+        assert controller.handle_logged_adif("WSJT-X", LIVE_ADIF) == 0
+    finally:
+        os.chmod(path, 0o644)
+    failed = [text for text in bar_texts(iface) if "VK2XYZ" in text]
+    assert len(failed) == 1, failed
+    assert failed[0].count("could not be saved") == 1, failed
+    assert gpkg.read_qso_rows(path) == []
+
+
+def test_save_warning_of_the_log_is_shown_as_it_is(env, load_plugin, iface, monkeypatch):
+    """insert_qsos's warning for a QSO it could not write already names the QSO and the
+    cause: the message bar shows it as it is, not inside a second "could not be saved"."""
+    plugin = load_plugin()
+    warning = "QSO VK2XYZ 2026-09-15 18:45: could not be saved: disk I/O error"
+
+    def failing_insert(path, qsos, *args, **kwargs):
+        return gpkg.InsertResult(failed=len(qsos), warnings=[warning])
+
+    monkeypatch.setattr(gpkg, "insert_qsos", failing_insert)
+    assert plugin.controller.handle_logged_adif("WSJT-X", LIVE_ADIF) == 0
+    assert [text for text in bar_texts(iface) if "VK2XYZ" in text] == [warning]
 
 
 # --------------------------------------------------------------------------- language

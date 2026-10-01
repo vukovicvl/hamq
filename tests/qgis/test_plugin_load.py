@@ -1,14 +1,19 @@
-"""Plugin lifecycle: classFactory -> initGui -> unload, twice (reload bug check), and the
-wiring of the actions, menu, toolbar widgets and panel (INT-01)."""
+"""Plugin lifecycle: classFactory -> initGui -> unload, twice (reload bug check), the QGIS
+plugin loader (qgis.utils, in a new interpreter), and the wiring of the actions, menu,
+toolbar widgets and panel (INT-01)."""
 
 from __future__ import annotations
 
 import functools
 import gc
+import json
 import os
 import socket
+import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 from qgis.core import (
@@ -25,7 +30,7 @@ from qgis.PyQt.QtWidgets import QDockWidget, QMenu, QPushButton, QToolBar
 import hamq
 from hamq import controller as controller_module
 from hamq import plugin as plugin_module
-from hamq.core.i18n import LANG_EN, set_language
+from hamq.core.i18n import LANG_EN, LANG_SR_CYRL, LANG_SR_LATN, set_language, tr
 from hamq.events import events
 from hamq.gui import ICONS_DIR, icon_path
 from hamq.gui.dock import HamQDock
@@ -47,7 +52,7 @@ MENU_TEXTS = [
     "Azimuthal map",
     "Maidenhead grid...",
     "Locator to point...",
-    "Recalculate distances and paths...",
+    "Recalculate distances and DXCC data...",
     "Download cty.dat",
     "Settings...",
     SWITCH_TITLE,
@@ -82,6 +87,115 @@ REQUIRED_ICONS = (
     "refresh.svg",
     "paths.svg",
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+#: Prefix of the result line printed by LOADER_SCRIPT.
+LOADER_RESULT = "HAMQ-LOADER-RESULT "
+#: Run in a new interpreter by test_qgis_plugin_loader_leaves_nothing_behind: loads, starts
+#: and unloads HamQ three times with qgis.utils, the way QGIS desktop and its Plugin Manager
+#: do. QGIS records the modules a plugin imports (qgis.utils._import, installed as
+#: builtins.__import__) and unloadPlugin() removes exactly those from sys.modules.
+LOADER_SCRIPT = r'''
+import builtins
+import contextlib
+import gc
+import io
+import json
+import os
+import shutil
+import sys
+import time
+import weakref
+
+repo_root = sys.argv[1]
+sys.path.insert(0, repo_root)
+from qgis.testing import start_app
+
+with contextlib.redirect_stdout(io.StringIO()):
+    start_app(cleanup=False)  # a new temporary QGIS profile
+import qgis.utils
+from qgis.core import Qgis, QgsApplication
+
+from tests.qgis.conftest import FakeIface, _process_events
+
+profile = os.environ["QGIS_CUSTOM_CONFIG_PATH"]
+settings_dir = os.path.realpath(QgsApplication.qgisSettingsDirPath())
+if not settings_dir.startswith(os.path.realpath(profile)):
+    print("HAMQ-LOADER-RESULT " + json.dumps({"error": "no temporary profile"}), flush=True)
+    os._exit(3)
+
+problems = []
+
+
+def on_message(message, tag, level, *_format):
+    if tag == "HamQ" and level in (Qgis.MessageLevel.Warning, Qgis.MessageLevel.Critical):
+        problems.append(message)
+
+
+log = QgsApplication.messageLog()
+getattr(log, "messageReceivedWithFormat", log.messageReceived).connect(on_message)
+
+qgis.utils.iface = FakeIface()  # not a mock: a mock keeps every argument it was given
+qgis.utils.plugin_paths = [repo_root]
+qgis.utils.updateAvailablePlugins()
+
+
+def hamq_modules():
+    return sorted(name for name in sys.modules if name.split(".")[0] == "hamq")
+
+
+def detached():
+    """Modules that are not the attribute of their package (a reused stale package)."""
+    result = []
+    for name in hamq_modules():
+        package, _dot, child = name.rpartition(".")
+        if package and getattr(sys.modules.get(package), child, None) is not sys.modules[name]:
+            result.append(name)
+    return result
+
+
+def settle():
+    deadline = time.monotonic() + 10
+    while QgsApplication.taskManager().countActiveTasks() and time.monotonic() < deadline:
+        _process_events()
+        time.sleep(0.01)
+    for _round in range(3):
+        _process_events()
+        gc.collect()
+
+
+def hamq_objects():
+    """Classes of the objects of HamQ classes that are still alive."""
+    names = set()
+    for obj in gc.get_objects():
+        module = getattr(type(obj), "__module__", None) or ""
+        if module.split(".")[0] == "hamq":
+            names.add(f"{module}.{type(obj).__qualname__}")
+    return sorted(names)
+
+
+result = {
+    "hooked": builtins.__import__ is qgis.utils._import,
+    "available": "hamq" in qgis.utils.available_plugins,
+    "before": hamq_modules(),
+    "cycles": [],
+}
+for _cycle in range(3):
+    cycle = {"loaded": qgis.utils.loadPlugin("hamq"), "started": qgis.utils.startPlugin("hamq")}
+    cycle["provider"] = QgsApplication.processingRegistry().providerById("hamq") is not None
+    cycle["detached"] = detached()
+    references = {name: weakref.ref(sys.modules[name]) for name in hamq_modules()}
+    cycle["unloaded"] = qgis.utils.unloadPlugin("hamq")
+    settle()
+    cycle["left"] = hamq_modules()
+    cycle["alive"] = sorted(name for name, ref in references.items() if ref() is not None)
+    cycle["objects"] = hamq_objects()
+    result["cycles"].append(cycle)
+result["problems"] = problems
+print("HAMQ-LOADER-RESULT " + json.dumps(result), flush=True)
+shutil.rmtree(profile, ignore_errors=True)
+os._exit(0)
+'''
 
 
 def provider_ids() -> list[str]:
@@ -316,6 +430,43 @@ def test_init_processing_only_then_unload(iface, process_events, log_messages):
     plugin.unload()
     process_events()
     assert "hamq" not in provider_ids()
+
+
+def test_qgis_plugin_loader_leaves_nothing_behind(tmp_path):
+    """loadPlugin / startPlugin / unloadPlugin of qgis.utils (QGIS start, Plugin Manager,
+    plugin upgrade) three times in a new interpreter: after every unload no hamq module is
+    left in sys.modules, and no hamq module or object is alive. A module QGIS did not record
+    would stay, keep the old load (parsed cty.dat, translator, settings, the events() hub)
+    in memory and be reused by the next load instead of being imported again."""
+    script = tmp_path / "plugin_loader.py"
+    script.write_text(LOADER_SCRIPT, encoding="utf-8")
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8")
+    env.pop("QGIS_CUSTOM_CONFIG_PATH", None)  # the session's profile; start_app makes one
+    completed = subprocess.run(
+        [sys.executable, str(script), str(REPO_ROOT)],
+        capture_output=True,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=300,
+    )
+    stdout = completed.stdout.decode("utf-8", "replace")
+    lines = [line for line in stdout.splitlines() if line.startswith(LOADER_RESULT)]
+    stderr = completed.stderr.decode("utf-8", "replace")
+    assert lines, f"exit status {completed.returncode}\n{stdout[-3000:]}\n{stderr[-3000:]}"
+    result = json.loads(lines[-1][len(LOADER_RESULT) :])
+    assert "error" not in result, result
+    assert result["hooked"], "qgis.utils does not track the plugin imports here"
+    assert result["available"]
+    assert result["before"] == []
+    assert len(result["cycles"]) == 3
+    for number, cycle in enumerate(result["cycles"], 1):
+        steps = {key: cycle[key] for key in ("loaded", "started", "provider", "unloaded")}
+        assert all(steps.values()), (number, steps)
+        assert cycle["detached"] == [], number
+        assert cycle["left"] == [], number
+        assert cycle["alive"] == [], number
+        assert cycle["objects"] == [], number
+    assert result["problems"] == []
 
 
 def test_language_change_retranslates_actions(loaded, monkeypatch):
@@ -796,3 +947,33 @@ def test_language_button_and_menu_switch_the_plugin(loaded):
     loaded.language_menu.action_for("en").trigger()
     assert current_language() == "en"
     assert loaded.import_action.text() == "Import ADIF..."
+
+
+def test_tooltips_follow_the_language_after_qgis_registered_the_actions(loaded):
+    """QGIS registers the main window's actions with its shortcuts manager after it
+    started the plugins of the last session, and that sets each tooltip to a fixed
+    "<b>tooltip</b>" (for an action without its own tooltip, Qt's tooltip is its text).
+    Every tooltip must still follow a language switch."""
+    gui = pytest.importorskip("qgis.gui", reason="qgis.gui is not available in this build")
+    gui.QgsGui.shortcutsManager().registerAllChildren(loaded.iface.mainWindow())
+    assert loaded.log_qso_action.toolTip() == "<b>Log QSO</b>"
+    assert loaded.import_action.toolTip() == "<b>Import an ADIF log into the HamQ GeoPackage</b>"
+    manager = loaded.controller.language_manager
+    for language in (LANG_SR_LATN, LANG_SR_CYRL, LANG_EN):
+        assert manager.set_setting(language) == language
+        for entry in loaded._actions:
+            if entry.tooltip:
+                expected = tr(entry.tooltip)
+            else:  # Qt's tooltip of an action: its text without "..." and "&"
+                expected = tr(entry.text).replace("...", "").replace("&", "").strip()
+            assert entry.action.toolTip() == expected, (language, entry.action.objectName())
+    assert loaded.log_qso_action.toolTip() == "Log QSO"
+
+
+def test_recalculate_action_is_named_like_its_algorithm(loaded):
+    registry = QgsApplication.processingRegistry()
+    manager = loaded.controller.language_manager
+    for language in (LANG_SR_LATN, LANG_SR_CYRL, LANG_EN):
+        assert manager.set_setting(language) == language
+        algorithm = registry.algorithmById("hamq:recalculate")
+        assert loaded.recalculate_action.text() == algorithm.displayName() + "...", language

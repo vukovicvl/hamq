@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from qgis.PyQt.QtCore import QDate, QDateTime, QTime, QTimeZone
+from qgis.PyQt.QtCore import QDate, QDateTime, Qt, QTime, QTimeZone
 from qgis.PyQt.QtGui import QValidator
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
@@ -528,6 +528,79 @@ def test_last_qso_from_qso_attributes(dock):
     assert label(dock, "HamQLastQsoCall") == "No QSO logged yet"
 
 
+def shown_tooltip(text: str) -> str:
+    """The text Qt shows for a tooltip: rich text when it starts with a tag, else as is."""
+    from qgis.PyQt.QtGui import QTextDocument
+
+    if not text.lstrip().startswith("<"):
+        assert "&lt;" not in text, text  # Qt would also take this for rich text
+        return text
+    document = QTextDocument()
+    document.setHtml(text)
+    return document.toPlainText()
+
+
+def test_values_from_logs_and_the_network_are_plain_text(dock, stats, log_messages):
+    """A crafted .adi file, WSJT-X UDP datagram or rigctld reply cannot style the panel."""
+    from dataclasses import replace
+
+    from hamq.core.stats import LongestQso
+
+    longest = LongestQso(
+        call="<b>VK2ABC</b>",
+        distance_km=15676.2,
+        country="<i>Australia</i>",
+        band="<u>15m</u>",
+        mode="SSB &amp; CW",
+        qso_datetime=datetime(2025, 6, 1, 21, 15, tzinfo=UTC),
+    )
+    dock.set_stats(replace(stats, longest=longest))
+    dock.set_station("<b>yu1ab</b>", "<s>KN04ft</s>")
+    dock.set_listening(True, "127.0.0.1", 2237)
+    dock.set_wsjtx_connected(True, "<b>WSJT-X</b>", "<i>2.7.0</i>")
+    dock.set_wsjtx_status(
+        {"freq_hz": 14074000, "mode": "<font color=red>FT8</font>", "dx_call": "<a href=x>K1A</a>"}
+    )
+    dock.set_last_qso({"CALL": "<b>dl1xyz</b>", "BAND": "20m", "COUNTRY": "<s>Germany</s>"})
+    dock.set_rig_enabled(True)
+    dock.set_rig_connected(True)
+    dock.set_rig_state({"freq_hz": 14074000, "mode": "<b>USB</b>", "passband": 2400})
+    dock.set_wsjtx_error("<b>bind failed</b>")
+    expected = {
+        "HamQTileLongestValue": "<b>VK2ABC</b>",
+        "HamQTileLongestDetail": f"15{NBSP}676{NBSP}km · <i>Australia</i>",
+        "HamQStationLabel": "<B>YU1AB</B> · <s>KN04ft</s>",
+        "HamQWsjtxState": "Connected: <b>WSJT-X</b> <i>2.7.0</i>",
+        "HamQWsjtxMode": "<font color=red>FT8</font>",
+        "HamQWsjtxDxCall": "<a href=x>K1A</a>",
+        "HamQLastQsoCall": "<B>DL1XYZ</B>",
+        "HamQLastQsoDetail": "20m · <s>Germany</s>",
+        "HamQRigDetails": f"20m · <b>USB</b> · 2400{NBSP}Hz",
+        "HamQWsjtxError": "<b>bind failed</b>",
+    }
+    for name, text in expected.items():
+        widget = child(dock, QLabel, name)
+        assert widget.text() == text, name
+        assert widget.textFormat() == Qt.TextFormat.PlainText, name
+    # no label of the panel is ever read as rich text
+    rich = [
+        w.objectName()
+        for w in dock.findChildren(QLabel)
+        if w.textFormat() != Qt.TextFormat.PlainText
+    ]
+    assert rich == []
+    # tooltips cannot be set to plain text: their markup is escaped
+    tile = dock.findChild(QWidget, "HamQTileLongest").toolTip()
+    assert shown_tooltip(tile) == "<u>15m</u> · SSB &amp; CW · 2025-06-01 21:15 UTC"
+    led = dock.findChild(QLabel, "HamQWsjtxLed").toolTip()
+    assert shown_tooltip(led) == "Connected: <b>WSJT-X</b> <i>2.7.0</i>"
+    # ordinary tooltips stay plain strings
+    dock.set_stats(stats)
+    tile = dock.findChild(QWidget, "HamQTileLongest").toolTip()
+    assert tile == "15m · SSB · 2025-06-01 21:15 UTC"
+    no_problems(log_messages)
+
+
 # --------------------------------------------------------------------------- radio
 
 
@@ -654,6 +727,56 @@ def test_frequency_spin_box_never_raises_into_qt(dock, monkeypatch, log_messages
     critical = [m for m in log_messages if m[1] == "HamQ" and m[2] == MSG_CRITICAL]
     assert len(critical) == 2
     assert all("formatter broke" in m[0] for m in critical)
+
+
+def test_decimal_spin_box_signs_suffix_and_any_locale(qgis_app, language):
+    """The settings dialog's azimuth fields: negative values, a "°" suffix, one decimal."""
+    from qgis.PyQt.QtCore import QLocale
+
+    spin = dock_module.DecimalSpinBox()
+    spin.setRange(-360.0, 720.0)
+    spin.setDecimals(1)
+    spin.setSuffix("°")
+    spin.setLocale(QLocale("sr_Latn_RS"))  # Qt itself would read "." as a thousands separator
+    state = QValidator.State
+    try:
+        for typed, value in (("36.5", 36.5), ("36,5°", 36.5), (" -90.5 ° ", -90.5), ("720", 720)):
+            spin.setValue(0.0)
+            spin.lineEdit().setText(typed)
+            spin.interpretText()
+            assert spin.value() == pytest.approx(value), typed
+        assert spin.validate("-", 0)[0] == state.Intermediate
+        assert spin.validate("-400", 0)[0] == state.Invalid  # below -360 for good
+        assert spin.validate("800°", 0)[0] == state.Invalid
+        assert spin.validate("1.2.3", 0)[0] == state.Invalid
+        assert spin.validate("36.55", 0)[0] == state.Invalid  # one decimal only
+        assert spin.fixup("36.5") == "36.5"  # Qt's fixup would make it 365
+        spin.setValue(-180.0)
+        assert spin.text() == "-180.0°"
+        language("sr_Latn")
+        spin.refresh_text()
+        assert spin.text() == "-180,0°"
+        assert spin.value() == -180.0
+    finally:
+        spin.deleteLater()
+    positive = dock_module.DecimalSpinBox()
+    positive.setRange(1.0, 10.0)
+    try:
+        assert positive.validate("-1", 0)[0] == state.Invalid  # no sign below a positive minimum
+        assert positive.validate("0.5", 0)[0] == state.Intermediate  # 0.5 can still become 5
+    finally:
+        positive.deleteLater()
+
+
+def test_hamq_locale_follows_the_language(language):
+    language("sr_Latn")
+    assert dock_module.hamq_locale().standaloneMonthName(10) == "oktobar"
+    assert dock_module.hamq_locale().decimalPoint() == ","
+    language("sr_Cyrl")
+    assert dock_module.hamq_locale().standaloneMonthName(10) == "октобар"
+    language("en")
+    assert dock_module.hamq_locale().standaloneMonthName(10) == "October"
+    assert dock_module.hamq_locale().decimalPoint() == "."
 
 
 def test_rotator_disabled_look(dock):

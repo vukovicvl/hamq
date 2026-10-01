@@ -1,10 +1,17 @@
 """WSJT-X / JTDX UDP listener: status, heartbeats and logged QSOs as Qt signals.
 
 WSJT-X sends its UDP messages to the address set under File > Settings > Reporting > UDP
-Server, 127.0.0.1:2237 by default. :class:`WsjtxListener` binds a ``QUdpSocket`` to that
-port on every IPv4 interface (``AnyIPv4`` with ``ShareAddress | ReuseAddressHint``) and
-decodes each datagram in the UI thread with :func:`hamq.core.wsjtx.decode`, which never
-raises; datagrams that are not WSJT-X messages are ignored.
+Server, 127.0.0.1:2237 by default. :class:`WsjtxListener` binds a ``QUdpSocket`` (no proxy,
+``ShareAddress | ReuseAddressHint``) to that port and decodes each datagram in the UI thread
+with :func:`hamq.core.wsjtx.decode`, which never raises; datagrams that are not WSJT-X
+messages are ignored.
+
+The socket binds the address set in the HamQ settings (the one WSJT-X sends to), so only
+datagrams sent to that address arrive: with the default 127.0.0.1 only programs on this
+computer can send QSOs into the log, nobody else on the network. ``0.0.0.0`` (or an empty
+address), a multicast group and a broadcast address bind every IPv4 interface
+(``AnyIPv4``); the user then chose to receive from the network. An address that is not one
+of this computer is reported as such.
 
 Only one program receives the unicast datagrams sent to a port. When another program (a
 logger, JTAlert, GridTracker) already listens, WSJT-X and all listeners use a multicast
@@ -25,7 +32,8 @@ Signals:
   a client is gone after ``CLIENT_TIMEOUT_MS`` without messages (WSJT-X sends a heartbeat
   every 15 s) or when it closes. ``True`` when the first client appears, ``False`` when the
   last one is gone or the listener stops;
-* ``errorOccurred(message)``: translated, e.g. the port is used by another program.
+* ``errorOccurred(message)``: translated, e.g. the port is used by another program;
+  :meth:`WsjtxListener.current_error` translates it again after a language switch.
 
 A client id that arrives as a null string is ``""`` in ``adifLogged`` and
 ``clientClosed``; the dicts of the other two signals keep it as ``None``.
@@ -40,9 +48,15 @@ from typing import Any
 
 from qgis.core import QgsMessageLog
 from qgis.PyQt.QtCore import QObject, QTimer, pyqtSignal
-from qgis.PyQt.QtNetwork import QHostAddress, QNetworkDatagram, QNetworkInterface, QUdpSocket
+from qgis.PyQt.QtNetwork import (
+    QHostAddress,
+    QNetworkDatagram,
+    QNetworkInterface,
+    QNetworkProxy,
+    QUdpSocket,
+)
 
-from ..core.i18n import tr
+from ..core.i18n import tr, tr_noop
 from ..core.wsjtx import decode
 from ..qgis_io.compat import (
     BIND_REUSE_ADDRESS_HINT,
@@ -50,10 +64,12 @@ from ..qgis_io.compat import (
     HOST_ANY_IPV4,
     MSG_INFO,
     MSG_WARNING,
+    NET_PROXY_NONE,
     NETIF_CAN_MULTICAST,
     NETIF_IS_LOOPBACK,
     NETIF_IS_UP,
     SOCKET_ERROR_ADDRESS_IN_USE,
+    SOCKET_ERROR_ADDRESS_NOT_AVAILABLE,
 )
 
 __all__ = ["WsjtxListener"]
@@ -63,6 +79,8 @@ _LOG_TAG = "HamQ"
 _WSJTX_UDP_SETTINGS = "File > Settings > Reporting > UDP Server"
 _EXAMPLE_MULTICAST = "224.0.0.1"
 _UNICAST, _MULTICAST, _IPV6 = "unicast", "multicast", "ipv6"
+_ANY_ADDRESS = "0.0.0.0"
+_LIMITED_BROADCAST = "255.255.255.255"
 
 
 def _log(message: str, level: Any) -> None:
@@ -74,6 +92,20 @@ def _display(client: str) -> str:
     return client or "WSJT-X"
 
 
+class _Text:
+    """A message kept untranslated (a source text marked with ``tr_noop`` and its values);
+    :meth:`render` translates it into the current language, also after a language switch."""
+
+    __slots__ = ("source", "values")
+
+    def __init__(self, source: str, **values: Any) -> None:
+        self.source = source
+        self.values = values
+
+    def render(self) -> str:
+        return tr(self.source).format(**self.values)
+
+
 def _parse_address(text: str) -> tuple[str, str] | None:
     """``(kind, address)`` for the address set in WSJT-X; ``None`` when it is not an address.
 
@@ -81,7 +113,7 @@ def _parse_address(text: str) -> tuple[str, str] | None:
     multicast (224.0.0.0/4) or ipv6.
     """
     if not text:
-        return _UNICAST, "0.0.0.0"
+        return _UNICAST, _ANY_ADDRESS
     if text.lower() == "localhost":
         return _UNICAST, "127.0.0.1"
     try:
@@ -91,6 +123,29 @@ def _parse_address(text: str) -> tuple[str, str] | None:
     if address.version != 4:
         return _IPV6, str(address)
     return (_MULTICAST if address.is_multicast else _UNICAST), str(address)
+
+
+def _is_broadcast(address: str) -> bool:
+    """255.255.255.255 or the broadcast address of a network interface of this computer."""
+    if address == _LIMITED_BROADCAST:
+        return True
+    return any(
+        entry.broadcast().toString() == address
+        for interface in QNetworkInterface.allInterfaces()
+        for entry in interface.addressEntries()
+    )
+
+
+def _bind_address(kind: str, address: str) -> QHostAddress:
+    """The address to bind for the WSJT-X ``address`` (normalized, IPv4).
+
+    The address itself, so that only datagrams sent to it arrive (127.0.0.1: only programs
+    on this computer). Every IPv4 interface for 0.0.0.0, a multicast group (joined after
+    binding) and a broadcast address (receiving broadcasts needs it on Windows).
+    """
+    if kind == _MULTICAST or address == _ANY_ADDRESS or _is_broadcast(address):
+        return QHostAddress(HOST_ANY_IPV4)
+    return QHostAddress(address)
 
 
 def _join_group(socket: QUdpSocket, group: QHostAddress) -> list[QNetworkInterface | None]:
@@ -153,6 +208,7 @@ class WsjtxListener(QObject):
         self._client_timeout_ms = client_timeout_ms  # None: CLIENT_TIMEOUT_MS
         self._last_adif: tuple[str, str, float] | None = None
         self._ignored_logged = False
+        self._last_error: _Text | None = None  # the problem of the last failed start()
         self._alive_timer = QTimer(self)
         self._alive_timer.setSingleShot(True)
         self._alive_timer.timeout.connect(self._on_alive_timeout)
@@ -167,9 +223,11 @@ class WsjtxListener(QObject):
         """Listen for WSJT-X on UDP ``port``; ``address`` is the address set in WSJT-X.
 
         A multicast address (224.0.0.0/4) joins that group; any other IPv4 address (or
-        ``localhost``) means unicast. The socket always binds all IPv4 interfaces.
-        Restarts when already running. Returns ``False`` and emits ``errorOccurred`` when
-        the address or port is invalid, the port is in use or the group cannot be joined.
+        ``localhost``) means unicast. The socket binds that address, so only datagrams sent
+        to it arrive; ``0.0.0.0`` (or ``""``), a multicast group and a broadcast address
+        bind every IPv4 interface. Restarts when already running. Returns ``False`` and
+        emits ``errorOccurred`` when the address or port is invalid, the address is not
+        one of this computer, the port is in use or the group cannot be joined.
         """
         try:
             self.stop()
@@ -177,7 +235,7 @@ class WsjtxListener(QObject):
         except Exception as exc:  # never raise into a button slot
             self._close_socket()
             self._report_error(
-                tr("The WSJT-X listener could not be started: {error}").format(error=exc)
+                _Text(tr_noop("The WSJT-X listener could not be started: {error}"), error=str(exc))
             )
             return False
 
@@ -225,6 +283,18 @@ class WsjtxListener(QObject):
         """The UDP port listened on, 0 when not running."""
         return self._port if self._socket is not None else 0
 
+    def current_error(self) -> str:
+        """The problem of the last failed :meth:`start` (``errorOccurred``), translated
+        again into the current language; ``""`` after a successful start and before any
+        problem. For showing it again after a language switch. Never raises."""
+        text = self._last_error
+        if text is None:
+            return ""
+        try:
+            return text.render()
+        except Exception:  # a broken translation must not break a language switch
+            return ""
+
     # ------------------------------------------------------------------ start and stop
 
     def _start(self, address: str, port: int) -> bool:
@@ -232,27 +302,30 @@ class WsjtxListener(QObject):
         text = address.strip() if isinstance(address, str) else ""
         parsed = _parse_address(text)
         if parsed is None or parsed[0] == _IPV6:
-            template = (
-                tr(
+            source = (
+                tr_noop(
                     "Invalid WSJT-X address {address}: use an IPv4 address such as 127.0.0.1 "
                     "or a multicast address such as {example}"
                 )
                 if parsed is None
-                else tr(
+                else tr_noop(
                     "IPv6 addresses are not supported for WSJT-X: {address}. Use an IPv4 "
                     "address such as 127.0.0.1 or a multicast address such as {example}"
                 )
             )
-            self._report_error(template.format(address=text, example=_EXAMPLE_MULTICAST))
+            self._report_error(_Text(source, address=text, example=_EXAMPLE_MULTICAST))
             return False
         kind, normalized = parsed
         if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
             self._report_error(
-                tr("Invalid UDP port {port}: use a number from 1 to 65535").format(port=port)
+                _Text(tr_noop("Invalid UDP port {port}: use a number from 1 to 65535"), port=port)
             )
             return False
 
         socket = QUdpSocket(self)
+        # A UDP socket on this computer never goes through a proxy; without this Qt asks for
+        # the system proxy configuration, synchronously in the GUI thread.
+        socket.setProxy(QNetworkProxy(NET_PROXY_NONE))
         try:
             return self._listen(socket, kind, normalized, port)
         except BaseException:
@@ -263,8 +336,8 @@ class WsjtxListener(QObject):
     def _listen(self, socket: QUdpSocket, kind: str, normalized: str, port: int) -> bool:
         """Bind ``socket``, join the group for a multicast address, start receiving."""
         flags = BIND_SHARE_ADDRESS | BIND_REUSE_ADDRESS_HINT
-        if not socket.bind(QHostAddress(HOST_ANY_IPV4), port, flags):
-            message = self._bind_error(socket, port)
+        if not socket.bind(_bind_address(kind, normalized), port, flags):
+            message = self._bind_error(socket, normalized, port)
             self._dispose(socket)
             self._report_error(message)
             return False
@@ -274,8 +347,10 @@ class WsjtxListener(QObject):
             group = QHostAddress(normalized)
             interfaces = _join_group(socket, group)
             if not interfaces:
-                message = tr("Could not join the multicast group {address}: {error}").format(
-                    address=normalized, error=socket.errorString()
+                message = _Text(
+                    tr_noop("Could not join the multicast group {address}: {error}"),
+                    address=normalized,
+                    error=socket.errorString(),
                 )
                 self._dispose(socket)
                 self._report_error(message)
@@ -285,8 +360,14 @@ class WsjtxListener(QObject):
         self._socket, self._group, self._interfaces = socket, group, interfaces
         self._address, self._port = normalized, port
         self._ignored_logged = False
+        self._last_error = None
         if group is None:
-            _log(tr("Listening for WSJT-X messages on UDP port {port}").format(port=port), MSG_INFO)
+            _log(
+                tr("Listening for WSJT-X messages on {address}, UDP port {port}").format(
+                    address=normalized, port=port
+                ),
+                MSG_INFO,
+            )
         else:
             _log(
                 tr(
@@ -298,19 +379,38 @@ class WsjtxListener(QObject):
             self._drain_timer.start()
         return True
 
-    def _bind_error(self, socket: QUdpSocket, port: int) -> str:
-        if socket.error() == SOCKET_ERROR_ADDRESS_IN_USE:
-            return tr(
-                "UDP port {port} is already in use, probably by another program that receives "
-                "WSJT-X messages (a logger, JTAlert, GridTracker). Only one program can receive "
-                "on a port unless all of them use multicast: set the same multicast address, "
-                "for example {example}, in WSJT-X ({menu}) and in the HamQ settings."
-            ).format(port=port, example=_EXAMPLE_MULTICAST, menu=_WSJTX_UDP_SETTINGS)
-        return tr(
-            "Cannot listen on UDP port {port}: {error}. If another program receives WSJT-X "
-            "messages on this port, set the same multicast address, for example {example}, in "
-            "WSJT-X ({menu}) and in the HamQ settings."
-        ).format(
+    def _bind_error(self, socket: QUdpSocket, address: str, port: int) -> _Text:
+        error = socket.error()
+        if error == SOCKET_ERROR_ADDRESS_IN_USE:
+            return _Text(
+                tr_noop(
+                    "UDP port {port} is already in use, probably by another program that "
+                    "receives WSJT-X messages (a logger, JTAlert, GridTracker). Only one program "
+                    "can receive on a port unless all of them use multicast: set the same "
+                    "multicast address, for example {example}, in WSJT-X ({menu}) and in the "
+                    "HamQ settings."
+                ),
+                port=port,
+                example=_EXAMPLE_MULTICAST,
+                menu=_WSJTX_UDP_SETTINGS,
+            )
+        if error == SOCKET_ERROR_ADDRESS_NOT_AVAILABLE:
+            return _Text(
+                tr_noop(
+                    "Cannot listen on {address} (UDP port {port}): {address} is not an address "
+                    "of this computer. In the HamQ settings, enter the address WSJT-X sends to "
+                    "({menu}), usually 127.0.0.1."
+                ),
+                address=address,
+                port=port,
+                menu=_WSJTX_UDP_SETTINGS,
+            )
+        return _Text(
+            tr_noop(
+                "Cannot listen on UDP port {port}: {error}. If another program receives WSJT-X "
+                "messages on this port, set the same multicast address, for example {example}, "
+                "in WSJT-X ({menu}) and in the HamQ settings."
+            ),
             port=port,
             error=socket.errorString().rstrip(". "),
             example=_EXAMPLE_MULTICAST,
@@ -340,7 +440,9 @@ class WsjtxListener(QObject):
             socket.close()  # releases the port at once
             socket.deleteLater()
 
-    def _report_error(self, message: str) -> None:
+    def _report_error(self, text: _Text) -> None:
+        self._last_error = text
+        message = text.render()
         _log(message, MSG_WARNING)
         with suppress(RuntimeError):  # the Qt object was deleted: the log has the message
             self.errorOccurred.emit(message)

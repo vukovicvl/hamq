@@ -248,3 +248,27 @@ local   host QGIS 4.2.1 (Qt 6.10.2)    PASS      18s     198 passed, 514 deselec
   under `## Unreleased`: "Hamlib TCP clients (`net/hamlib_client.py`): `RigClient`
   (frequency and mode) and `RotatorClient` (azimuth, turn, stop) for rigctld/rotctld,
   asynchronous, with timeouts, automatic reconnection and rate-limited translated errors."
+- **Release pass (2026-10-01)** (net fixer):
+  - **False timeouts after a GUI stall fixed.** When QGIS blocked its GUI thread for 2 s or
+    more, the client reported "did not reply within 2 s" and reconnected although the
+    daemon had answered in time. Root cause: the command was still in Qt's write buffer
+    (sent only when the event loop ran again), not a late `readAll()`. Commands are now
+    flushed to the socket at once (`flush()`), and before a timeout is reported the
+    event loop gets one more 100 ms pass (`_settle`), which delivers a reply or a
+    connection that arrived while the thread was blocked; it is armed again when the
+    watchdog fired late once more. The checklist claim "never a `waitFor*()` call" still
+    holds.
+  - Connection errors say what to do: "the connection was refused. Start {daemon} or
+    check the address and port in the HamQ settings", "the host name was not found.
+    Check the address in the HamQ settings", "no answer within {seconds} s. Check the
+    address and port in the HamQ settings" (compat `SOCKET_ERROR_*`), instead of ending
+    in Qt's English error text.
+  - New `current_error()`: the problem reported last, translated again in the current
+    language; `""` when it is over (a new connection, a poll that works again, a new
+    command, `stop()`). The controller does not use it yet (M5-03 Notes).
+  - Still open (net): daemon replies quoted in log lines are not escaped for the Log
+    Messages panel of QGIS 3.34 to 3.40.6 and 3.42.0 / 3.42.1
+    (`compat.LOG_PANEL_SHOWS_HTML`).
+  - For the user documentation: `rigctld --vfo` is not supported (see the note above);
+    sharing the radio with WSJT-X works through "Hamlib NET rigctl" in WSJT-X pointed at
+    the same rigctld (only one program can own the serial port).

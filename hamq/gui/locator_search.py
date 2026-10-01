@@ -6,7 +6,8 @@ text, centers the map canvas on the cell and zooms so that the cell and its
 neighbours are visible (the cell bounds are transformed from EPSG:4326 to the canvas
 CRS, which QGIS keeps equal to the project CRS), and highlights the cell with a rubber
 band for about three seconds. Invalid input turns the line edit red and shows a warning
-in the message bar.
+in the message bar. The field is as wide as its placeholder in the current language (at
+least a 10-character locator), so it never stretches across a wide toolbar.
 
 Call :meth:`LocatorSearchWidget.cleanup` before the plugin unloads; it removes the
 rubber band, stops the timer and disconnects from ``events()``. Safe to call twice.
@@ -34,12 +35,12 @@ from qgis.core import (
 from qgis.PyQt import sip
 from qgis.PyQt.QtCore import QTimer, pyqtSignal
 from qgis.PyQt.QtGui import QColor
-from qgis.PyQt.QtWidgets import QHBoxLayout, QLineEdit, QWidget
+from qgis.PyQt.QtWidgets import QHBoxLayout, QLineEdit, QStyle, QWidget
 
 from ..core import maidenhead
 from ..core.i18n import tr
 from ..events import events
-from ..qgis_io.compat import GEOMETRY_POLYGON, MSG_CRITICAL, MSG_WARNING
+from ..qgis_io.compat import GEOMETRY_POLYGON, MSG_CRITICAL, MSG_WARNING, SIZE_FIXED
 from . import get_icon
 
 __all__ = ["HIGHLIGHT_MS", "MAX_LENGTH", "LocatorSearchWidget", "latitude_limit", "view_rectangle"]
@@ -55,6 +56,7 @@ _WGS84 = "EPSG:4326"
 _MERCATOR_MAX_LAT = 85.0511287798066  # Web Mercator: the map is a square
 _EDGE_POINTS = 16  # points per cell edge of the highlight: cell edges curve in most CRSs
 _ERROR_STYLE = "QLineEdit { color: #c62828; border: 1px solid #c62828; padding: 1px 2px; }"
+_WIDEST_LOCATOR = "KN04ft12ab"  # the field always fits the longest accepted input
 _BAND_COLOR = QColor(230, 81, 0)
 _BAND_FILL = QColor(230, 81, 0, 60)
 
@@ -157,8 +159,9 @@ class LocatorSearchWidget(QWidget):
         self.line_edit.setMaxLength(MAX_LENGTH)
         self.line_edit.setClearButtonEnabled(True)
         self.line_edit.addAction(get_icon("locator.svg"), QLineEdit.ActionPosition.LeadingPosition)
-        metrics = self.line_edit.fontMetrics()
-        self.line_edit.setMinimumWidth(metrics.horizontalAdvance("KN04ft12ab") + 64)
+        # A toolbar stretches an expanding widget over the whole row: the field gets a
+        # fixed width instead (set for each language by retranslate()).
+        self.setSizePolicy(SIZE_FIXED, SIZE_FIXED)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.line_edit)
@@ -188,6 +191,22 @@ class LocatorSearchWidget(QWidget):
                 "press Enter to center the map on it"
             )
         )
+        self._fit_width()
+
+    def _fit_width(self) -> None:
+        """Make the field as wide as its placeholder or a 10-character locator, plus the
+        locator icon and the clear button."""
+        edit = self.line_edit
+        metrics = edit.fontMetrics()
+        text = max(
+            metrics.horizontalAdvance(edit.placeholderText()),
+            metrics.horizontalAdvance(_WIDEST_LOCATOR),
+        )
+        style = edit.style()
+        icon = style.pixelMetric(QStyle.PixelMetric.PM_SmallIconSize, None, edit)
+        frame = style.pixelMetric(QStyle.PixelMetric.PM_DefaultFrameWidth, None, edit)
+        action = icon + 6 + icon // 4  # what QLineEdit gives an action: icon, padding, gap
+        edit.setFixedWidth(text + 2 * action + 2 * frame + 16)
 
     def has_error(self) -> bool:
         """True while the line edit shows invalid input."""

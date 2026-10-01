@@ -34,6 +34,7 @@ from hamq.qgis_io import compat, gpkg, layers
 from hamq.qgis_io.fields import FIELD_KINDS, make_fields
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+PATH_TRIGGER = "qso_delete_paths"  # schema 2: deleting a QSO deletes its path
 UTC = timezone.utc
 STATION = Station(call="YU1XX", grid="KN04ft")
 BEOGRAD = (44.8125, 20.4612)
@@ -229,6 +230,10 @@ def test_ensure_gpkg_creates_the_schema(tmp_path):
     assert sql(path, 'SELECT "key", "value" FROM hamq_meta') == [
         ("schema_version", str(gpkg.SCHEMA_VERSION))
     ]
+    assert gpkg.SCHEMA_VERSION == 2
+    assert sql(
+        path, "SELECT name, tbl_name FROM sqlite_master WHERE name = ?", (PATH_TRIGGER,)
+    ) == [(PATH_TRIGGER, "qso")]
 
 
 def test_ensure_gpkg_is_idempotent(tmp_gpkg):
@@ -267,7 +272,7 @@ def test_ensure_gpkg_adds_missing_tables_and_fields(tmp_gpkg):
     assert kept["call"] == "YU1AB"
     assert kept.geometry().asPoint() == QgsPointXY(20.0, 44.0)
     assert layer(tmp_gpkg, "qso_path").fields().names() == ["fid"] + [n for n, _ in PATH_FIELDS]
-    assert sql(tmp_gpkg, "SELECT value FROM hamq_meta") == [("1",)]
+    assert sql(tmp_gpkg, "SELECT value FROM hamq_meta") == [(str(gpkg.SCHEMA_VERSION),)]
     assert gpkg.existing_dedup_keys(tmp_gpkg) == {"YU1AB|202609151845|20m|FT8"}
 
 
@@ -275,7 +280,58 @@ def test_ensure_gpkg_upgrades_an_old_schema_version(tmp_gpkg):
     gpkg.ensure_gpkg(tmp_gpkg)
     sql(tmp_gpkg, "UPDATE hamq_meta SET value = '0'")
     gpkg.ensure_gpkg(tmp_gpkg)
-    assert sql(tmp_gpkg, "SELECT value FROM hamq_meta") == [("1",)]
+    assert sql(tmp_gpkg, "SELECT value FROM hamq_meta") == [(str(gpkg.SCHEMA_VERSION),)]
+
+
+def test_ensure_gpkg_upgrades_schema_1_and_removes_its_orphan_paths(tmp_gpkg):
+    """Schema 1 had no trigger: a QSO deleted in QGIS left its path behind. The upgrade
+    removes such paths; a line without a QSO link (drawn by hand) stays."""
+    result = gpkg.insert_qsos(tmp_gpkg, sample_qsos())
+    sql(tmp_gpkg, f'DROP TRIGGER "{PATH_TRIGGER}"')
+    sql(tmp_gpkg, "UPDATE hamq_meta SET value = '1'")
+    sql(tmp_gpkg, "DELETE FROM qso WHERE fid = ?", (result.fids[0],))
+    drawn = layer(tmp_gpkg, "qso_path")
+    line = QgsFeature(drawn.fields())
+    line.setAttributes([None, None, 1.0, 2.0, "20m", "FT8"])
+    line.setGeometry(QgsGeometry.fromMultiPolylineXY([[QgsPointXY(0, 0), QgsPointXY(1, 1)]]))
+    assert drawn.dataProvider().addFeatures([line])[0]
+    del drawn
+    assert len(features(tmp_gpkg, "qso_path")) == 5
+
+    gpkg.ensure_gpkg(tmp_gpkg)
+
+    assert sql(tmp_gpkg, "SELECT value FROM hamq_meta") == [("2",)]
+    links = sorted(
+        (feature["qso_fid"] for feature in features(tmp_gpkg, "qso_path")),
+        key=lambda fid: -1 if is_null(fid) else fid,
+    )
+    assert is_null(links[0]) and links[1:] == result.fids[1:4]
+    assert sql(tmp_gpkg, "SELECT count(*) FROM sqlite_master WHERE name = ?", (PATH_TRIGGER,)) == [
+        (1,)
+    ]
+
+
+def test_deleting_a_qso_deletes_its_path(tmp_gpkg, clean_project):
+    """In a QGIS edit session or with any other program: no line is left behind, and
+    importing the QSO again draws its path once."""
+    result = gpkg.insert_qsos(tmp_gpkg, sample_qsos())
+    vk2abc, w1aw = result.fids[:2]
+    qso_layer, path_layer = layers.load_layers(tmp_gpkg)
+    assert qso_layer.startEditing()
+    assert qso_layer.deleteFeature(w1aw)
+    assert qso_layer.commitChanges(), qso_layer.commitErrors()
+    assert sorted(path_links(tmp_gpkg)) == [vk2abc, *result.fids[2:4]]
+    path_layer.reload()
+    assert path_layer.featureCount() == 3
+
+    sql(tmp_gpkg, "DELETE FROM qso WHERE fid = ?", (vk2abc,))  # another program
+    assert sorted(path_links(tmp_gpkg)) == result.fids[2:4]
+
+    again = gpkg.insert_qsos(tmp_gpkg, sample_qsos())
+    assert (again.inserted, again.duplicates, again.paths) == (2, 3, 2)
+    links = path_links(tmp_gpkg)
+    assert sorted(links) == sorted([*result.fids[2:4], *again.fids])
+    assert len(features(tmp_gpkg, "qso_path")) == 4
 
 
 def test_ensure_gpkg_keeps_a_newer_schema_version(tmp_gpkg, log_messages):
@@ -744,6 +800,97 @@ def test_a_row_the_file_rejects_fails_alone(tmp_gpkg, english):
     )
 
 
+@contextlib.contextmanager
+def read_only(*paths: str):
+    """Take the write permission of ``paths`` (files or folders) away for the block."""
+    modes = [(path, os.stat(path).st_mode) for path in paths]
+    try:
+        for path, mode in modes:
+            os.chmod(path, mode & ~0o222)
+        if any(os.access(path, os.W_OK) for path, _ in modes):
+            pytest.skip("this user may write read-only files (root?)")
+        yield
+    finally:
+        for path, mode in modes:
+            os.chmod(path, mode)
+
+
+def test_a_read_only_file_is_shown_but_not_written(tmp_gpkg, clean_project, english):
+    gpkg.insert_qsos(tmp_gpkg, sample_qsos()[:2])
+    with read_only(tmp_gpkg):
+        with pytest.raises(
+            gpkg.GpkgError, match="is read-only. Check the file permissions"
+        ) as caught:
+            gpkg.insert_qsos(tmp_gpkg, sample_qsos())
+        assert str(caught.value).startswith(tmp_gpkg)
+        assert "choose another GeoPackage in the HamQ settings" in str(caught.value)
+        with pytest.raises(gpkg.GpkgError, match="is read-only"):
+            gpkg.recalculate(tmp_gpkg, Station("YU1XX", "JN95"))
+        gpkg.ensure_gpkg(tmp_gpkg)  # complete: only read
+        assert len(gpkg.read_qso_rows(tmp_gpkg)) == 2
+        qso_layer, _ = layers.load_layers(tmp_gpkg)
+        assert qso_layer.featureCount() == 2
+    assert gpkg.insert_qsos(tmp_gpkg, sample_qsos()).inserted == 3
+
+
+def test_a_read_only_file_of_an_old_schema_is_shown(tmp_gpkg, log_messages, english):
+    """The schema upgrade needs writing: a read-only file is used as it is."""
+    gpkg.insert_qsos(tmp_gpkg, sample_qsos()[:2])
+    sql(tmp_gpkg, f'DROP TRIGGER "{PATH_TRIGGER}"')
+    sql(tmp_gpkg, "UPDATE hamq_meta SET value = '1'")
+    with read_only(tmp_gpkg):
+        gpkg.ensure_gpkg(tmp_gpkg)
+        assert len(gpkg.read_qso_rows(tmp_gpkg)) == 2
+        with pytest.raises(gpkg.GpkgError, match="is read-only"):
+            gpkg.insert_qsos(tmp_gpkg, sample_qsos())
+    assert any("is read-only" in m for m, tag, _ in log_messages if tag == "HamQ")
+    gpkg.ensure_gpkg(tmp_gpkg)
+    assert sql(tmp_gpkg, "SELECT value FROM hamq_meta") == [(str(gpkg.SCHEMA_VERSION),)]
+
+
+def test_a_read_only_folder_is_reported(tmp_path, english):
+    folder = tmp_path / "logs"
+    path = str(folder / "log.gpkg")
+    gpkg.insert_qsos(path, sample_qsos()[:2])
+    with read_only(str(folder)):
+        with pytest.raises(gpkg.GpkgError, match="The folder .* is not writable") as caught:
+            gpkg.insert_qsos(path, sample_qsos())
+        assert str(folder) in str(caught.value) and "Check the folder permissions" in str(
+            caught.value
+        )
+        with pytest.raises(gpkg.GpkgError, match="is not writable"):
+            gpkg.recalculate(path, STATION)
+        new = folder / "new.gpkg"
+        with pytest.raises(gpkg.GpkgError, match="is not writable, so .* cannot be created"):
+            gpkg.ensure_gpkg(str(new))
+        assert not new.exists()
+        with pytest.raises(gpkg.GpkgError, match="is not writable, so .* cannot be created"):
+            gpkg.insert_qsos(str(new), sample_qsos())
+    assert gpkg.insert_qsos(path, sample_qsos()).inserted == 3
+
+
+def test_a_write_refused_by_sqlite_is_one_clear_error(tmp_gpkg, monkeypatch, english):
+    """Permissions the file system check cannot see (ACLs, network shares): the first write
+    fails, and that is one error with what to do, not a warning for every QSO."""
+    gpkg.insert_qsos(tmp_gpkg, sample_qsos()[:2])
+    monkeypatch.setattr(gpkg, "_write_problem", lambda path, creating=False: None)
+    with read_only(tmp_gpkg):
+        with pytest.raises(gpkg.GpkgError, match="could not be written: attempt to write a"):
+            gpkg.insert_qsos(tmp_gpkg, sample_qsos())
+        with pytest.raises(gpkg.GpkgError, match="Check the permissions of the file"):
+            gpkg.recalculate(tmp_gpkg, Station("YU1XX", "JN95"))
+    assert len(gpkg.read_qso_rows(tmp_gpkg)) == 2
+
+
+def test_read_only_messages_are_translated(tmp_gpkg, english):
+    from hamq.core.i18n import LANG_SR_LATN, set_language
+
+    gpkg.ensure_gpkg(tmp_gpkg)
+    set_language(LANG_SR_LATN)
+    with read_only(tmp_gpkg), pytest.raises(gpkg.GpkgError, match="samo za čitanje"):
+        gpkg.insert_qsos(tmp_gpkg, sample_qsos())
+
+
 def test_a_qso_without_dedup_key_is_not_saved(tmp_gpkg, english):
     (qso,) = make_qsos([record("NOKEY", 1)])
     result = gpkg.insert_qsos(tmp_gpkg, [dataclasses.replace(qso, dedup_key="")])
@@ -1144,6 +1291,65 @@ def test_recalculate_with_a_new_station(tmp_gpkg):
     assert parts[0][0] == pytest.approx(tuple(reversed(maidenhead.to_latlon("JN95"))))
 
     assert gpkg.recalculate(tmp_gpkg, Station("YU1XX", "JN95")) == 0  # nothing new
+
+
+def test_recalculate_moves_qsos_that_got_my_locator_at_the_import(tmp_gpkg):
+    """An import gives QSOs without a QTH of their own my locator as ``my_gridsquare`` and
+    marks them in ``adif_extra``: they follow a new locator. QSOs logged with
+    MY_GRIDSQUARE keep theirs; MY_LAT/MY_LON stay the origin."""
+    mark = {gpkg.STATION_GRID_KEY: "Y"}
+    my_position = {f"MY_{key}": value for key, value in adif_coordinates(*BEOGRAD).items()}
+    qsos = make_qsos(
+        [
+            record("FILLED", 1, GRIDSQUARE="JO62", **mark),
+            record("LOGGED", 2, GRIDSQUARE="JO62", MY_GRIDSQUARE="KN04ft"),
+            record("MYPOS", 3, GRIDSQUARE="JO62", **mark, **my_position),
+        ]
+    )
+    gpkg.insert_qsos(tmp_gpkg, qsos)
+    before = gpkg.read_qso_rows(tmp_gpkg)
+    assert {row["my_gridsquare"] for row in before} == {"KN04ft"}
+    assert json.loads(before[0]["adif_extra"]) == mark
+
+    assert gpkg.recalculate(tmp_gpkg, Station("YU1XX", "jn95WG")) == 2
+    filled, logged, mypos = gpkg.read_qso_rows(tmp_gpkg)
+    assert filled["my_gridsquare"] == mypos["my_gridsquare"] == "JN95wg"
+    assert filled["distance_km"] == pytest.approx(
+        geo.distance_km(*maidenhead.to_latlon("JN95wg"), *maidenhead.to_latlon("JO62"))
+    )
+    assert filled["bearing_deg"] == pytest.approx(
+        geo.bearing_deg(*maidenhead.to_latlon("JN95wg"), *maidenhead.to_latlon("JO62"))
+    )
+    parts = parts_of(path_links(tmp_gpkg)[filled["fid"]].geometry())
+    assert parts[0][0] == pytest.approx(tuple(reversed(maidenhead.to_latlon("JN95wg"))))
+    assert logged["my_gridsquare"] == "KN04ft"
+    assert logged["distance_km"] == pytest.approx(before[1]["distance_km"])
+    assert mypos["distance_km"] == pytest.approx(before[2]["distance_km"])  # MY_LAT/MY_LON
+
+    assert gpkg.recalculate(tmp_gpkg, Station()) == 0  # no locator: the QSOs keep the last
+    assert gpkg.read_qso_rows(tmp_gpkg)[0]["my_gridsquare"] == "JN95wg"
+    assert gpkg.recalculate(tmp_gpkg, STATION) == 2  # and follow the next one
+    filled, logged, _ = gpkg.read_qso_rows(tmp_gpkg)
+    assert filled["distance_km"] == pytest.approx(before[0]["distance_km"])
+    assert (filled["my_gridsquare"], logged["my_gridsquare"]) == ("KN04ft", "KN04ft")
+
+
+def test_recalculate_keeps_my_gridsquare_and_the_origin_together(tmp_gpkg):
+    """Whichever locator the import rules take for my QTH (a more precise locator of mine
+    may refine the logged one), ``my_gridsquare`` names the start of the path."""
+    gpkg.insert_qsos(
+        tmp_gpkg, make_qsos([record("LOGGED", 1, GRIDSQUARE="JO62", MY_GRIDSQUARE="KN04ft")])
+    )
+    gpkg.recalculate(tmp_gpkg, Station("YU1XX", "KN04ft12"))
+    (row,) = gpkg.read_qso_rows(tmp_gpkg)
+    origin = maidenhead.to_latlon(row["my_gridsquare"])
+    assert row["distance_km"] == pytest.approx(
+        geo.distance_km(*origin, *maidenhead.to_latlon("JO62"))
+    )
+    parts = parts_of(path_links(tmp_gpkg)[row["fid"]].geometry())
+    assert parts[0][0] == pytest.approx(tuple(reversed(origin)))
+    gpkg.recalculate(tmp_gpkg, Station("YU1XX", "JN95wg"))  # moved: the logged QTH stays
+    assert gpkg.read_qso_rows(tmp_gpkg)[0]["my_gridsquare"] == row["my_gridsquare"]
 
 
 def test_recalculate_with_force_station(tmp_gpkg, log_messages, english):

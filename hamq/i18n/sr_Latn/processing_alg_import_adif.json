@@ -1,7 +1,7 @@
 {
   "ADIF file": "ADIF fajl",
   "ADIF files ({pattern})": "ADIF fajlovi ({pattern})",
-  "ADIF, log, QSO, import, WSJT-X, GeoPackage, ham radio": "ADIF, log, veza, uvoz, WSJT-X, GeoPackage, radio-amater",
+  "ADIF, log, QSO, import, WSJT-X, GeoPackage, ham radio": "ADIF, log, veza, uvoz, WSJT-X, GeoPackage, radio-amaterizam",
   "Add the QSO layers to the project": "Dodaj slojeve veza u projekat",
   "All files ({pattern})": "Svi fajlovi ({pattern})",
   "Checking the QSOs": "Provera veza",
@@ -12,16 +12,21 @@
   "Import canceled. The QSOs saved before stay in the GeoPackage: {count}": "Uvoz je otkazan. Veze sačuvane pre toga ostaju u GeoPackage fajlu: {count}",
   "Imported QSOs": "Uvezene veze",
   "Imported: {imported}, duplicates: {duplicates}, skipped: {skipped}": "Uvezeno: {imported}, duplikata: {duplicates}, preskočeno: {skipped}",
-  "Imports an ADIF log ({extension}) into the HamQ GeoPackage: a point for each QSO at the position of the other station (LAT/LON, else the center of the locator in GRIDSQUARE, else the DXCC entity from cty.dat) and the geodesic path from my QTH. QSOs that are already in the GeoPackage (same callsign, minute, band and mode) are skipped as duplicates, so importing the same file again adds nothing. Records without CALL or with an invalid date or time are skipped and reported. My QTH is MY_LAT/MY_LON or MY_GRIDSQUARE of each record, else My QTH locator.": "Uvozi ADIF log ({extension}) u HamQ GeoPackage: tačku za svaku vezu na poziciji druge stanice (LAT/LON, inače centar lokatora iz GRIDSQUARE, inače DXCC entitet iz cty.dat) i geodetsku putanju od mog QTH-a. Veze koje već postoje u GeoPackage fajlu (isti pozivni znak, minut, opseg i vrsta rada) preskaču se kao duplikati, pa ponovni uvoz istog fajla ne dodaje ništa. Zapisi bez CALL ili sa neispravnim datumom ili vremenom se preskaču i prijavljuju. Moj QTH je MY_LAT/MY_LON ili MY_GRIDSQUARE svakog zapisa, inače Moj QTH lokator.",
+  "Imports an ADIF log ({extension}) into the HamQ GeoPackage: a point for each QSO at the position of the other station (LAT/LON, else the center of the locator in GRIDSQUARE, else the DXCC entity from cty.dat) and the geodesic path from my QTH. QSOs that are already in the GeoPackage (same callsign, minute, band and mode) are skipped as duplicates, so importing the same file again adds nothing. Records without CALL or with an invalid date or time are skipped and reported. My QTH is MY_LAT/MY_LON or MY_GRIDSQUARE of each record, else My QTH locator.": "Uvozi ADIF log ({extension}) u HamQ GeoPackage: za svaku vezu pravi tačku na poziciji druge stanice (LAT/LON, inače centar lokatora iz GRIDSQUARE, inače DXCC entitet iz cty.dat) i geodetsku putanju od mog QTH-a. Veze koje već postoje u GeoPackage fajlu (isti pozivni znak, minut, opseg i vrsta rada) preskaču se kao duplikati, pa ponovni uvoz istog fajla ne dodaje ništa. Zapisi bez CALL ili sa neispravnim datumom ili vremenom se preskaču i prijavljuju. Moj QTH je MY_LAT/MY_LON ili MY_GRIDSQUARE svakog zapisa, inače parametar „Moj QTH lokator“.",
+  "Largest ADIF file to read (MB)": "Najveća veličina ADIF fajla (MB)",
   "No ADIF file was given": "ADIF fajl nije zadat",
   "No GeoPackage file is set": "GeoPackage fajl nije zadat",
   "No QSO records found in {file}": "U fajlu {file} nema zapisa o vezama",
+  "Reading an ADIF file takes about ten times its size in memory, and many short records even more. Larger files, and files with more than {count} records per MB of this limit, are not read, so that QGIS does not run out of memory. Raise it only when this computer has enough memory.": "Čitanje ADIF fajla zauzima oko deset puta više memorije od veličine fajla, a mnogo kratkih zapisa još više. Veći fajlovi i fajlovi sa više od {count} zapisa po MB ove granice se ne čitaju, da QGIS-u ne bi ponestalo memorije. Povećajte je samo ako ovaj računar ima dovoljno memorije.",
   "Reading the ADIF file": "Čitanje ADIF fajla",
   "Records in the ADIF file: {count}": "Broj zapisa u ADIF fajlu: {count}",
   "Saving the QSOs": "Čuvanje veza",
   "Skipped records": "Preskočeni zapisi",
   "The ADIF file {path} could not be read: {error}": "ADIF fajl {path} nije moguće pročitati: {error}",
+  "The ADIF file {path} has too many records: more than {count}, the most HamQ reads with a limit of {limit} MB. Split the log into smaller files, or raise the limit under Advanced Parameters if this computer has enough memory.": "ADIF fajl {path} ima previše zapisa: više od {count}, koliko HamQ najviše čita sa granicom od {limit} MB. Podelite log na manje fajlove ili povećajte granicu u naprednim parametrima ako ovaj računar ima dovoljno memorije.",
+  "The ADIF file {path} is too large: {size} MB, the limit is {limit} MB. Reading it takes about ten times as much memory. Split the log into smaller files, or raise the limit under Advanced Parameters if this computer has enough memory.": "ADIF fajl {path} je prevelik: {size} MB, a granica je {limit} MB. Za čitanje je potrebno oko deset puta više memorije. Podelite log na manje fajlove ili povećajte granicu u naprednim parametrima ako ovaj računar ima dovoljno memorije.",
   "The QSO layers are in edit mode. The new QSOs were saved in the GeoPackage and show up after you save or discard your edits.": "Slojevi veza su u režimu uređivanja. Nove veze su sačuvane u GeoPackage fajlu i pojaviće se kada sačuvate ili odbacite svoje izmene.",
   "The QSO layers could not be added to the project: {error}": "Slojeve veza nije moguće dodati u projekat: {error}",
-  "Warnings while importing {file}:": "Upozorenja pri uvozu fajla {file}:"
+  "Warnings while importing {file}:": "Upozorenja pri uvozu fajla {file}:",
+  "not a regular file": "nije običan fajl"
 }

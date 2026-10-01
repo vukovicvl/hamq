@@ -13,10 +13,11 @@ from qgis.core import (
     QgsRectangle,
 )
 from qgis.PyQt import sip
+from qgis.PyQt.QtCore import QPoint
 
 from hamq.core import maidenhead
 from hamq.core.geo import aeqd_proj
-from hamq.core.i18n import LANG_EN, LANG_SR_LATN, set_language
+from hamq.core.i18n import LANG_EN, LANG_SR_CYRL, LANG_SR_LATN, set_language
 from hamq.events import events
 from hamq.gui.locator_search import (
     HIGHLIGHT_MS,
@@ -315,6 +316,40 @@ def test_retranslates(widget):
     events().languageChanged.emit(LANG_SR_LATN)
     assert widget.line_edit.placeholderText() == "Lokator, npr. KN04ft"
     assert "pritisnite Enter" in widget.line_edit.toolTip()
+
+
+@pytest.mark.parametrize("code", [LANG_EN, LANG_SR_LATN, LANG_SR_CYRL])
+def test_toolbar_field_keeps_a_compact_width(iface, process_events, code):
+    """In a wide toolbar the field does not stretch over the whole row, and the
+    placeholder still fits (it is longer in Serbian)."""
+    from qgis.PyQt.QtWidgets import QMainWindow, QToolBar, QToolButton
+
+    set_language(code)
+    window = QMainWindow()
+    window.resize(1400, 300)
+    toolbar = QToolBar("HamQ", window)
+    window.addToolBar(toolbar)
+    toolbar.addAction("Panel")
+    widget = LocatorSearchWidget(iface)
+    toolbar.addWidget(widget)
+    switch = QToolButton()  # like the language switch that follows the field
+    switch.setText("EN")
+    toolbar.addWidget(switch)
+    window.show()
+    process_events()
+    try:
+        edit = widget.line_edit
+        assert edit.placeholderText()
+        hint = edit.fontMetrics().horizontalAdvance(edit.placeholderText())
+        assert edit.width() > hint + 2 * edit.height()  # room for the icons too
+        assert widget.width() < 3 * hint  # the toolbar row is 1400 px wide
+        gap = switch.mapTo(window, QPoint(0, 0)).x() - widget.mapTo(window, QPoint(0, 0)).x()
+        assert gap < widget.width() + 32  # the next button follows the field directly
+    finally:
+        widget.cleanup()
+        window.close()
+        window.deleteLater()
+        process_events()
 
 
 def test_cleanup(iface, canvas, process_events):

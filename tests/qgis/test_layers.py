@@ -10,11 +10,13 @@ from qgis.core import (
     QgsCategorizedSymbolRenderer,
     QgsFeature,
     QgsGeometry,
+    QgsLayerTreeModel,
     QgsPointXY,
     QgsProject,
     QgsSingleSymbolRenderer,
     QgsVectorLayer,
 )
+from qgis.PyQt.QtCore import QCoreApplication, Qt
 
 from hamq.core.i18n import LANG_EN, LANG_SR_CYRL, LANG_SR_LATN, set_language
 from hamq.core.qso import QSO_FIELDS, Station, records_to_qsos
@@ -340,6 +342,30 @@ def test_retranslate_layers(tmp_gpkg, clean_project):
     assert path_layer.name() == "My paths"
 
 
+def test_language_switch_updates_the_legend(tmp_gpkg, clean_project):
+    """The Layers panel shows the translated "Other bands" entry without a restart."""
+    qso_layer, path_layer = layers.load_layers(tmp_gpkg)
+    model = QgsLayerTreeModel(clean_project.layerTreeRoot())
+    root = clean_project.layerTreeRoot()
+
+    def last_entry(layer: QgsVectorLayer) -> str:
+        QCoreApplication.processEvents()
+        nodes = model.layerLegendNodes(root.findLayer(layer.id()))
+        return nodes[-1].data(Qt.ItemDataRole.DisplayRole)
+
+    assert last_entry(qso_layer) == last_entry(path_layer) == "Other bands"
+    disconnect = layers.connect_events()
+    try:
+        set_language(LANG_SR_LATN)
+        events().languageChanged.emit(LANG_SR_LATN)
+        assert last_entry(qso_layer) == last_entry(path_layer) == "Ostali opsezi"
+        set_language(LANG_SR_CYRL)
+        events().languageChanged.emit(LANG_SR_CYRL)
+        assert last_entry(qso_layer) == "Остали опсези"
+    finally:
+        disconnect()
+
+
 def test_connect_events(tmp_gpkg, clean_project):
     qso_layer, _ = layers.load_layers(tmp_gpkg)
     disconnect = layers.connect_events()
@@ -360,6 +386,73 @@ def test_connect_events(tmp_gpkg, clean_project):
     set_language(LANG_EN)
     events().languageChanged.emit(LANG_EN)
     assert qso_layer.name() == "Veze"
+
+
+@pytest.fixture
+def announced():
+    """Paths of the ``events().dataChanged`` emissions during the test."""
+    received: list[str] = []
+
+    def slot(path: str) -> None:
+        received.append(path)
+
+    events().dataChanged.connect(slot)
+    yield received
+    events().dataChanged.disconnect(slot)
+
+
+def same_files(paths: list[str], path: str) -> bool:
+    return bool(paths) and all(os.path.samefile(item, path) for item in paths)
+
+
+def test_saved_edits_are_announced(tmp_gpkg, clean_project, announced):
+    """A QSO deleted in an edit session: once saved, its path (deleted by the GeoPackage
+    trigger) leaves the map and the statistics hear of it (dataChanged)."""
+    gpkg.insert_qsos(tmp_gpkg, qsos(3))
+    qso_layer, path_layer = layers.load_layers(tmp_gpkg)  # in the project before connecting
+    disconnect = layers.connect_events()
+    try:
+        assert path_layer.featureCount() == 3
+        assert qso_layer.startEditing()
+        assert qso_layer.deleteFeature(next(qso_layer.getFeatures()).id())
+        assert qso_layer.commitChanges(), qso_layer.commitErrors()
+        assert announced == []  # not from inside the save
+        QCoreApplication.processEvents()
+        assert len(announced) == 1 and same_files(announced, tmp_gpkg)
+        assert path_layer.featureCount() == 2
+        assert qso_layer.startEditing()
+        qso_layer.rollBack()  # nothing saved, nothing announced
+        QCoreApplication.processEvents()
+        assert len(announced) == 1
+    finally:
+        disconnect()
+    disconnect()  # safe twice
+    assert qso_layer.startEditing()
+    assert qso_layer.deleteFeature(next(qso_layer.getFeatures()).id())
+    assert qso_layer.commitChanges()
+    QCoreApplication.processEvents()
+    assert len(announced) == 1  # no longer connected
+
+
+def test_saved_edits_of_layers_added_later_are_announced(tmp_gpkg, clean_project, announced):
+    disconnect = layers.connect_events()
+    try:
+        gpkg.insert_qsos(tmp_gpkg, qsos(2))
+        announced.clear()
+        qso_layer, path_layer = layers.load_layers(tmp_gpkg)
+        other = QgsVectorLayer("Point?crs=EPSG:4326&field=call:string", "other", "memory")
+        clean_project.addMapLayer(other)
+        assert path_layer.startEditing() and qso_layer.startEditing()
+        assert path_layer.changeAttributeValue(
+            next(path_layer.getFeatures()).id(), path_layer.fields().lookupField("band"), "40m"
+        )
+        assert path_layer.commitChanges() and qso_layer.commitChanges()
+        assert other.startEditing() and other.commitChanges()  # not a HamQ layer
+        QCoreApplication.processEvents()
+        assert len(announced) == 1 and same_files(announced, tmp_gpkg)  # both saves: once
+        clean_project.removeMapLayer(qso_layer.id())  # forgotten with the layer
+    finally:
+        disconnect()
 
 
 def test_slots_log_errors_instead_of_raising(tmp_gpkg, clean_project, monkeypatch, log_messages):

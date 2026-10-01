@@ -1,7 +1,9 @@
 {
   "Connected to {daemon} at {address}": "HamQ je povezan sa servisom {daemon} ({address})",
   "Connection to {daemon} at {address} failed: {error}; reconnecting": "Komunikacija sa servisom {daemon} ({address}) je prekinuta: {error}; ponovno povezivanje",
-  "Could not connect to {daemon} at {address}: no answer within {seconds} s": "Nije moguće povezati se sa servisom {daemon} ({address}): nema odgovora u roku od {seconds} s",
+  "Could not connect to {daemon} at {address}: no answer within {seconds} s. Check the address and port in the HamQ settings.": "Nije moguće povezati se sa servisom {daemon} ({address}): nema odgovora u roku od {seconds} s. Proverite adresu i port u HamQ podešavanjima.",
+  "Could not connect to {daemon} at {address}: the connection was refused. Start {daemon} or check the address and port in the HamQ settings.": "Nije moguće povezati se sa servisom {daemon} ({address}): povezivanje je odbijeno. Pokrenite {daemon} ili proverite adresu i port u HamQ podešavanjima.",
+  "Could not connect to {daemon} at {address}: the host name was not found. Check the address in the HamQ settings.": "Nije moguće povezati se sa servisom {daemon} ({address}): ime računara nije pronađeno. Proverite adresu u HamQ podešavanjima.",
   "Could not connect to {daemon} at {address}: {error}": "Nije moguće povezati se sa servisom {daemon} ({address}): {error}",
   "Hamlib command {command} failed: {error}": "Hamlib komanda {command} nije uspela: {error}",
   "Reading the frequency failed: {error}": "Čitanje frekvencije nije uspelo: {error}",

@@ -37,12 +37,15 @@ from qgis.core import (
 from qgis.gui import QgsMapCanvas, QgsMapToolEmitPoint, QgsRubberBand
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor, QCursor
-from qgis.PyQt.QtWidgets import QMessageBox
 
 from ..core import geo, hamlib
 from ..core.i18n import tr, tr_noop
 from ..qgis_io import compat
 from .dock import format_azimuth, format_bearing, format_distance, format_number
+
+# Qt names the standard buttons of its own QMessageBox in the QGIS language, without a
+# Serbian translation: HamQ's names them in the HamQ language.
+from .message_box import MessageBox as QMessageBox
 
 __all__ = ["RotatorMapTool", "long_path_parts"]
 
@@ -118,8 +121,9 @@ class RotatorMapTool(QgsMapToolEmitPoint):
     as a ``QgsPointXY`` in EPSG:4326 (x = longitude). With the long path, bearing and
     distance are those of the long path.
 
-    ``confirm(message) -> bool`` asks before the first turn (default: a
-    ``QMessageBox.question``). Optional keyword arguments: ``notify(message)`` shows a
+    ``confirm(message) -> bool`` asks before the first turn (default: a question box
+    with the buttons "Turn" and "Cancel" in the HamQ language, "Cancel" being the
+    default). Optional keyword arguments: ``notify(message)`` shows a
     translated problem (default: the QGIS message bar when available, and the HamQ
     log), ``get_current_az()`` returns the rotator position or ``None``,
     ``get_long_path()`` returns ``True`` to turn to the long path (e.g.
@@ -423,12 +427,15 @@ class RotatorMapTool(QgsMapToolEmitPoint):
                 pass
 
     def _ask(self, message: str) -> bool:
+        # HamQ's QMessageBox: the buttons in the HamQ language, "Cancel" the default (Enter
+        # alone never turns the antenna) and the answer for Escape.
         answer = QMessageBox.question(
             self._canvas.window(),
             tr("Turn the rotator"),
             message,
             compat.MSGBOX_YES | compat.MSGBOX_NO,
             compat.MSGBOX_NO,
+            button_texts={compat.MSGBOX_YES: tr("Turn"), compat.MSGBOX_NO: tr("Cancel")},
         )
         return answer == compat.MSGBOX_YES
 

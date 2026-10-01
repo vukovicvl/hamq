@@ -161,9 +161,10 @@ def test_scanner_resolves_subpackage_relative_imports():
 # --- from __future__ import annotations in every module ------------------------------
 
 PACKAGE_FILES = sorted((REPO_ROOT / "hamq").rglob("*.py"))
-# Modules outside the M0 scope that still lack the import. Their owners add it;
-# until then the test reports them as xfail (and passes once they are fixed).
-FUTURE_IMPORT_PENDING = frozenset({"hamq/__init__.py", "hamq/core/__init__.py"})
+# Modules that still lack the import, reported as xfail until their owner adds it (the
+# test passes as soon as the import is there). hamq/__init__.py belongs to the plugin
+# area; once it has the import, delete this set and the xfail below.
+FUTURE_IMPORT_PENDING = frozenset({"hamq/__init__.py"})
 
 
 def has_future_annotations(source: str) -> bool:
@@ -181,7 +182,7 @@ def test_module_has_future_annotations(path):
     rel = path.relative_to(REPO_ROOT).as_posix()
     found = has_future_annotations(path.read_text(encoding="utf-8"))
     if not found and rel in FUTURE_IMPORT_PENDING:
-        pytest.xfail(f"{rel} is outside the M0 scope; its owner adds the import")
+        pytest.xfail(f"{rel}: its owner (plugin area) adds the import before v0.1.0")
     assert found, f"{rel}: add 'from __future__ import annotations' after the module docstring"
 
 

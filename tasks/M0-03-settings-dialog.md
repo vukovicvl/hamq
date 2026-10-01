@@ -131,3 +131,10 @@ ruff check / ruff format --check                     -> clean
   The dialog disconnects itself when it closes. Whoever owns the WSJT-X listener and the
   Hamlib clients restarts them on `events().settingsChanged`.
 - `HamQSettings.wsjtx_addr` cannot be empty; use `0.0.0.0` to listen on every address.
+  Since the release pass the listener binds the address itself (M5-02 Notes): the default
+  127.0.0.1 receives only from programs on this computer; WSJT-X on another computer needs
+  this computer's LAN address or `0.0.0.0` here.
+- **Release pass (2026-10-01)** (GUI fixer): the azimuth fields use the HamQ decimal
+  separator (`dock.DecimalSpinBox`) and accept both `.` and `,`; Qt's own fixup no longer
+  deletes a `.` it takes for the thousands separator of the locale (`36.5` was read as
+  365).

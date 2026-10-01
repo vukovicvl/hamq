@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -9,11 +10,14 @@ from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsDistanceArea,
+    QgsFeature,
+    QgsGeometry,
     QgsPointXY,
     QgsProject,
     QgsRectangle,
     QgsVectorLayer,
 )
+from qgis.PyQt.QtXml import QDomDocument
 
 from hamq.core import maidenhead
 from hamq.core.geo import aeqd_proj
@@ -23,6 +27,7 @@ from hamq.gui.azimuthal import (
     AZIMUTH_KIND,
     GROUP_NAME,
     RING_KIND,
+    STATE_PROPERTY,
     AzimuthalMap,
     azimuths,
     ring_distances,
@@ -373,6 +378,123 @@ def test_checkable_action_follows_the_map(iface, settings, canvas):
         action.deleteLater()
 
 
+def skips_scratch_layer_question(layer) -> bool:
+    """QGIS asks "temporary scratch layers ... will be lost" before closing a project
+    (quit, new or another project) for a memory layer with features, unless the layer
+    has the custom property ``skipMemoryLayersCheck``."""
+    return bool(int(layer.customProperty("skipMemoryLayersCheck") or 0))
+
+
+def test_helper_never_triggers_the_scratch_layer_question(azimuthal, canvas, settings):
+    start_project(canvas, "EPSG:3857")
+    assert azimuthal.enable()
+    assert skips_scratch_layer_question(azimuthal.helper_layer())
+    settings.my_grid = "JN58td"  # re-centred: a new helper layer
+    events().settingsChanged.emit()
+    assert azimuthal.center_locator() == "JN58td"
+    assert skips_scratch_layer_question(azimuthal.helper_layer())
+
+
+def save_and_reopen(tmp_path, before_reading=None):
+    """Write the project, clear it, (change something,) read it again."""
+    path = str(tmp_path / "azimuthal.qgz")
+    project = QgsProject.instance()
+    assert project.write(path)
+    project.clear()
+    if before_reading is not None:
+        before_reading()
+    assert project.read(path)
+    return project
+
+
+def test_project_saved_with_the_map_on_reopens_with_it(azimuthal, canvas, tmp_path):
+    """The helper is a memory layer: a project keeps the layer but not its features."""
+    original, extent = start_project(canvas, "EPSG:3857")
+    assert azimuthal.enable()
+    project = save_and_reopen(tmp_path)
+    assert azimuthal.is_enabled()
+    assert azimuthal.changes == [True, False, True]  # cleared by reading, then on again
+    assert azimuthal.center_locator() == "KN04ft"
+    assert project.crs() == expected_crs("KN04ft")
+    assert azimuthal.crs() == project.crs()
+    layer = azimuthal.helper_layer()
+    assert layer is not None
+    assert list(project.mapLayers().values()) == [layer]  # the saved helper, filled again
+    features = list(layer.getFeatures())
+    assert len([f for f in features if f["kind"] == RING_KIND]) == 8
+    assert len([f for f in features if f["kind"] == AZIMUTH_KIND]) == 12
+    assert skips_scratch_layer_question(layer)
+    assert hamq_group().findLayer(layer.id()) is not None
+    assert not project.isDirty()  # opening a project changes nothing in it
+    # switching off restores the CRS and the view from before the map was switched on
+    azimuthal.disable()
+    assert not azimuthal.is_enabled()
+    assert project.crs() == original
+    assert canvas.mapSettings().destinationCrs() == original
+    assert project.mapLayers() == {}
+    assert hamq_group() is None  # the map created the group, now empty again
+    center = canvas.extent().center()
+    assert center.x() == pytest.approx(extent.center().x())
+    assert center.y() == pytest.approx(extent.center().y())
+    assert azimuthal.changes == [True, False, True, False]
+
+
+def test_reopened_helper_follows_the_hamq_language(azimuthal, canvas, tmp_path):
+    start_project(canvas, "EPSG:4326")
+    assert azimuthal.enable()  # saved with the English name
+    save_and_reopen(tmp_path, before_reading=lambda: set_language(LANG_SR_LATN))
+    assert azimuthal.helper_layer().name() == "Mreža azimutalne karte (KN04ft)"
+
+
+def test_saved_helper_without_the_azimuthal_crs_is_removed(azimuthal, canvas, tmp_path):
+    """E.g. the CRS was changed in a QGIS without HamQ: the empty helper is a leftover."""
+    start_project(canvas, "EPSG:3857")
+    assert azimuthal.enable()
+    project = QgsProject.instance()
+    other = QgsCoordinateReferenceSystem("EPSG:32634")
+    project.blockSignals(True)  # HamQ does not see this change
+    try:
+        project.setCrs(other)
+    finally:
+        project.blockSignals(False)
+    save_and_reopen(tmp_path)
+    assert not azimuthal.is_enabled()
+    assert project.mapLayers() == {}
+    assert hamq_group() is None  # the map had created it for the helper
+    assert project.crs() == other
+    assert azimuthal.changes == [True, False]
+
+
+def test_unusable_saved_helpers(azimuthal, canvas, tmp_path):
+    """An empty saved helper that cannot be used is a leftover; features are never lost."""
+    start_project(canvas, "EPSG:3857")
+    project = QgsProject.instance()
+    uri = "LineString?crs=EPSG:3857&field=kind:string&field=value:double&field=label:string"
+
+    def tagged(name, state):
+        layer = QgsVectorLayer(uri, name, "memory")
+        layer.setCustomProperty(STATE_PROPERTY, state)
+        assert project.addMapLayer(layer) is layer
+        return layer
+
+    tagged("unreadable", "not json")
+    tagged("another centre", json.dumps({"locator": "JN58td"}))  # not the project CRS
+    project.layerTreeRoot().addGroup(GROUP_NAME)  # the user's group: it stays
+    save_and_reopen(tmp_path)
+    assert project.mapLayers() == {}
+    assert hamq_group() is not None
+    assert not azimuthal.is_enabled()
+
+    kept = tagged("with features", "{}")  # e.g. features kept by another plugin
+    feature = QgsFeature(kept.fields())
+    feature.setGeometry(QgsGeometry.fromPolylineXY([QgsPointXY(0, 0), QgsPointXY(1, 1)]))
+    assert kept.dataProvider().addFeatures([feature])[0]
+    project.readProject.emit(QDomDocument())
+    assert project.mapLayer(kept.id()) is kept
+    assert not azimuthal.is_enabled()
+    assert azimuthal.changes == []
+
+
 def test_cleanup_restores_and_disconnects(iface, settings, canvas):
     obj = events()
     before = (obj.receivers(obj.languageChanged), obj.receivers(obj.settingsChanged))
@@ -389,4 +511,5 @@ def test_cleanup_restores_and_disconnects(iface, settings, canvas):
     azimuthal.enabledChanged.connect(changes.append)
     QgsProject.instance().setCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
     QgsProject.instance().clear()
+    QgsProject.instance().readProject.emit(QDomDocument())
     assert changes == []

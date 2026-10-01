@@ -2,7 +2,8 @@
 
 The fake (tests/qgis/fake_hamlib.py) runs in the same Qt event loop and replays the
 exact reply formats of Hamlib 4.6.2. Short timers keep the tests fast: 50 ms polls,
-300 ms command timeout, 150 ms between reconnection attempts.
+300 ms command timeout, 150 ms between reconnection attempts. The tests with a blocked
+GUI thread use ``ThreadedFakeHamlib``, which answers from its own threads meanwhile.
 
 Optional real-daemon tests run when HAMQ_RIGCTLD / HAMQ_ROTCTLD are set to
 ``host:port`` (e.g. the ``hamq/hamlib-dummy`` image: ``rigctld -m 1`` on 4532,
@@ -21,17 +22,25 @@ from qgis.PyQt.QtCore import QEventLoop, QObject, QTimer
 from qgis.PyQt.QtNetwork import QTcpSocket
 
 from hamq.core.hamlib import ResponseParser, error_message
-from hamq.core.i18n import current_language, set_language
+from hamq.core.i18n import current_language, latin_to_cyrillic, set_language
 from hamq.net import hamlib_client
 from hamq.net.hamlib_client import HamlibClient, RigClient, RotatorClient
 from hamq.qgis_io.compat import MSG_CRITICAL, MSG_INFO, MSG_WARNING, NET_PROXY_NONE
 
-from .fake_hamlib import FakeHamlib, drain_deleted, pump, wait_until
+from .fake_hamlib import FakeHamlib, ThreadedFakeHamlib, drain_deleted, pump, wait_until
 
 HOST = "127.0.0.1"
 FAST = {"timeout_ms": 300, "reconnect_ms": 150}
 FULL_STATE = {"freq_hz": 14074000, "mode": "USB", "passband": 2400}
 UNKNOWN_STATE = {"freq_hz": None, "mode": None, "passband": None}
+
+
+def refused(port: int, daemon: str = "rigctld") -> str:
+    """The message when nothing accepts connections at HOST:port (the daemon is not running)."""
+    return (
+        f"Could not connect to {daemon} at {HOST}:{port}: the connection was refused. "
+        f"Start {daemon} or check the address and port in the HamQ settings."
+    )
 
 
 class Recorder:
@@ -389,8 +398,8 @@ def test_daemon_restart_and_rate_limited_connection_errors(rig_daemon, make_clie
     rig_daemon.stop()  # daemon gone: connections refused from now on
     assert wait_until(lambda: connected.values == [True, False])
     pump(0.8)  # several reconnection attempts
-    refused = [e for e in errors.values if e.startswith("Could not connect")]
-    assert refused == [f"Could not connect to rigctld at {HOST}:{port}: Connection refused"]
+    not_running = [e for e in errors.values if e.startswith("Could not connect")]
+    assert not_running == [refused(port)]
     assert len(errors.values) == 2  # the lost connection, then one "refused"
     assert client.is_running() and not client.is_connected()
 
@@ -482,7 +491,7 @@ def test_command_queued_while_connecting_is_reported_when_connecting_fails(rig_d
     client.set_frequency(7074000)  # accepted while connecting
     assert wait_until(lambda: len(errors.values) == 2)
     assert errors.values == [
-        f"Could not connect to rigctld at {HOST}:{port}: Connection refused",
+        refused(port),
         "Setting the frequency failed: not connected to rigctld",
     ]
 
@@ -522,6 +531,254 @@ def test_connect_timeout_or_error_on_an_unreachable_address(make_client):
     assert client.is_running() and not client.is_connected()
     client.stop()
     assert timers_active(client) == []
+
+
+def test_connection_errors_say_what_to_do(rig_daemon, make_client, log_messages):
+    # The two first-use problems: the daemon is not running, the host name is wrong. The
+    # message says what to do in plain words instead of ending in Qt's English error text.
+    port = rig_daemon.port
+    rig_daemon.stop()
+    client = make_client(RotatorClient, timeout_ms=5000)
+    errors = Recorder(client.errorOccurred)
+    client.start(HOST, port)
+    assert wait_until(lambda: errors.values != [])
+    assert errors.values == [refused(port, "rotctld")]
+    assert (refused(port, "rotctld"), "HamQ", MSG_WARNING) in log_messages
+
+    client.start("nonexistent-host.invalid", 4533)  # .invalid never resolves (RFC 6761)
+    assert wait_until(lambda: len(errors.values) == 2, timeout=6.0)
+    assert errors.values[1] == (
+        "Could not connect to rotctld at nonexistent-host.invalid:4533: the host name was not "
+        "found. Check the address in the HamQ settings."
+    )
+
+
+def test_connect_timeout_says_what_to_check(make_client):
+    client = make_client(timeout_ms=200)
+    errors = Recorder(client.errorOccurred)
+    client.start("192.0.2.1", 4532)  # TEST-NET-1: never answers
+    assert wait_until(lambda: errors.values != [], timeout=3.0)
+    if "no answer" not in errors.values[0]:
+        pytest.skip(f"this network reports an error at once: {errors.values[0]}")
+    assert errors.values == [
+        "Could not connect to rigctld at 192.0.2.1:4532: no answer within 0.2 s. "
+        "Check the address and port in the HamQ settings."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        (
+            "sr_Latn",
+            "Nije moguće povezati se sa servisom rigctld ({address}): povezivanje je odbijeno. "
+            "Pokrenite rigctld ili proverite adresu i port u HamQ podešavanjima.",
+        ),
+        (
+            "sr_Cyrl",
+            "Није могуће повезати се са сервисом rigctld ({address}): повезивање је одбијено. "
+            "Покрените rigctld или проверите адресу и порт у HamQ подешавањима.",
+        ),
+    ],
+)
+def test_connection_refused_is_translated(rig_daemon, make_client, language, expected):
+    port = rig_daemon.port
+    rig_daemon.stop()
+    client = make_client()
+    errors = Recorder(client.errorOccurred)
+    set_language(language)
+    client.start(HOST, port)
+    assert wait_until(lambda: errors.values != [])
+    assert errors.values == [expected.format(address=f"{HOST}:{port}")]
+    assert "refused" not in errors.values[0]  # no English Qt text left
+
+
+# --------------------------------------------------------------------------- blocked GUI thread
+#
+# QGIS sometimes blocks its GUI thread for seconds (a slow plugin, a Processing algorithm
+# that runs in the main thread, a large redraw). The daemon answers in time meanwhile, so
+# that must not be reported as "did not reply" (a reconnect drops the queued commands).
+
+
+@pytest.fixture
+def threaded_rig(qgis_app):
+    fake = ThreadedFakeHamlib("rig")
+    fake.start()
+    yield fake
+    fake.stop()
+
+
+@pytest.fixture
+def threaded_rot(qgis_app):
+    fake = ThreadedFakeHamlib("rot")
+    fake.start()
+    yield fake
+    fake.stop()
+
+
+def block_gui_thread(seconds: float) -> None:
+    """The Qt thread is busy: no events, no timers, no socket notifications meanwhile."""
+    time.sleep(seconds)
+
+
+@pytest.mark.parametrize("stall", [0.35, 0.8])
+def test_a_blocked_gui_thread_is_not_a_silent_daemon(threaded_rig, make_client, stall):
+    # The stall starts right after the command was handed to the socket, before the event
+    # loop ran again. A command that waits in Qt's write buffer during the stall reaches
+    # the daemon only afterwards, when the overdue watchdog is about to fire.
+    client = make_client(poll_ms=60_000, timeout_ms=300)
+    connected = Recorder(client.connectedChanged)
+    errors = Recorder(client.errorOccurred)
+    start_connected(client, threaded_rig)
+    assert wait_until(lambda: client.state() == FULL_STATE)
+    client.set_frequency(7074000)
+    assert client._in_flight is not None and client._in_flight.header == "set_freq"
+    block_gui_thread(stall)
+    assert wait_until(lambda: client.state()["freq_hz"] == 7074000)
+    pump(0.5)
+    assert errors.values == []
+    assert connected.values == [True]
+    assert threaded_rig.connections == 1
+
+
+def test_queued_turn_survives_a_blocked_gui_thread(threaded_rot, make_client):
+    client = make_client(RotatorClient, poll_ms=60_000, timeout_ms=300)
+    connected = Recorder(client.connectedChanged)
+    errors = Recorder(client.errorOccurred)
+    start_connected(client, threaded_rot)
+    client.stop_rotation()  # in flight
+    client.set_position(200)  # waits behind it
+    assert [command.header for command in client._commands] == ["set_pos"]
+    block_gui_thread(0.8)
+    assert wait_until(lambda: client.position() == (200.0, 0.0))
+    pump(0.3)
+    assert errors.values == []
+    assert connected.values == [True]
+
+
+def test_an_overdue_watchdog_lets_the_waiting_reply_in_first(threaded_rig, make_client):
+    # After a stall, an event dispatcher may run the overdue watchdog before it delivers
+    # the socket's read notification; the reply then waits in the kernel, unread by Qt.
+    client = make_client(poll_ms=60_000, timeout_ms=300)
+    connected = Recorder(client.connectedChanged)
+    errors = Recorder(client.errorOccurred)
+    start_connected(client, threaded_rig)
+    assert wait_until(lambda: client.state() == FULL_STATE)
+    client.set_frequency(7074000)
+    client._socket.flush()  # on its way to the daemon (no event loop pass)
+    block_gui_thread(0.6)  # the reply arrives meanwhile
+    assert client._in_flight is not None  # not read yet
+    client._on_watchdog()  # the dispatcher runs the timer first
+    assert errors.values == [] and client.is_connected()
+    assert wait_until(lambda: client.state()["freq_hz"] == 7074000)
+    pump(0.5)
+    assert errors.values == []
+    assert connected.values == [True]
+
+
+def test_an_overdue_connect_watchdog_lets_the_connection_in_first(threaded_rig, make_client):
+    client = make_client(poll_ms=60_000, timeout_ms=300)
+    errors = Recorder(client.errorOccurred)
+    client.start(HOST, threaded_rig.port)
+    assert client._phase == "connecting"
+    block_gui_thread(0.6)  # the connection is made meanwhile
+    client._on_watchdog()  # the timer runs before the "connected" notification
+    assert errors.values == []
+    assert wait_until(lambda: client.state() == FULL_STATE)
+    assert errors.values == []
+
+
+def test_a_silent_daemon_still_times_out(rig_daemon, make_client):
+    # The extra pass of the event loop before a timeout is reported is short and not repeated
+    # while the event loop runs normally.
+    rig_daemon.mute = True
+    client = make_client(timeout_ms=300)
+    errors = Recorder(client.errorOccurred)
+    started = time.monotonic()
+    client.start(HOST, rig_daemon.port)
+    assert wait_until(lambda: errors.values != [], timeout=3.0)
+    assert 0.3 <= time.monotonic() - started < 1.5  # timeout + one short pass
+    assert errors.values == [
+        f"rigctld at {HOST}:{rig_daemon.port} did not reply within 0.3 s; reconnecting"
+    ]
+
+
+# --------------------------------------------------------------------------- current error
+
+
+def test_current_error_is_shown_again_in_the_new_language(rig_daemon, make_client):
+    port = rig_daemon.port
+    rig_daemon.stop()  # rigctld is not running
+    client = make_client(reconnect_ms=100_000)
+    errors = Recorder(client.errorOccurred)
+    assert client.current_error() == ""
+    client.start(HOST, port)
+    assert wait_until(lambda: errors.values != [])
+    assert client.current_error() == errors.values[-1] == refused(port)
+    latin = (
+        f"Nije moguće povezati se sa servisom rigctld ({HOST}:{port}): povezivanje je odbijeno. "
+        "Pokrenite rigctld ili proverite adresu i port u HamQ podešavanjima."
+    )
+    set_language("sr_Latn")
+    assert client.current_error() == latin
+    set_language("sr_Cyrl")
+    assert client.current_error() == latin_to_cyrillic(latin)
+    set_language("en")
+    assert client.current_error() == refused(port)
+    assert len(errors.values) == 1  # nothing was reported again
+
+    rig_daemon.start(port)
+    client.start(HOST, port)  # the same address while waiting: retries now
+    assert wait_until(client.is_connected)
+    assert client.current_error() == ""  # the daemon answers: the problem is over
+
+
+def test_current_error_of_commands_and_polls(rig_daemon, make_client):
+    rig_daemon.errors = {"m": -11}
+    client = make_client()
+    errors = Recorder(client.errorOccurred)
+    start_connected(client, rig_daemon)
+    assert wait_until(lambda: errors.values != [])
+    assert client.current_error() == "Reading the mode failed: Feature not available"
+    set_language("sr_Latn")
+    assert client.current_error() == "Čitanje vrste rada nije uspelo: Funkcija nije dostupna"
+    set_language("en")
+    rig_daemon.errors = {}
+    assert wait_until(lambda: client.state()["mode"] == "USB")
+    assert client.current_error() == ""  # the poll works again
+
+    rig_daemon.errors = {"F": -1}
+    client.set_frequency(7074000)
+    assert wait_until(lambda: len(errors.values) == 2)
+    assert client.current_error() == "Setting the frequency failed: Invalid parameter"
+    set_language("sr_Latn")
+    assert client.current_error() == "Podešavanje frekvencije nije uspelo: Neispravan parametar"
+    set_language("en")
+    client.set_mode("LSB")  # a new command: the earlier failure is not the current problem
+    assert client.current_error() == ""
+    rig_daemon.errors = {}
+    client.set_frequency(7074000)
+    assert wait_until(lambda: client.state()["freq_hz"] == 7074000)
+    assert client.current_error() == ""
+
+    client.stop()
+    client.set_frequency(7074000)  # refused: not connected
+    assert client.current_error() == "Setting the frequency failed: not connected to rigctld"
+    client.stop()
+    assert client.current_error() == ""
+
+
+def test_current_error_after_the_parent_deleted_the_client(rig_daemon, process_events):
+    parent = QObject()
+    client = RigClient(50, parent, **FAST)
+    client.set_frequency(7074000)  # not running: reported
+    assert client.current_error() == "Setting the frequency failed: not connected to rigctld"
+    parent.deleteLater()
+    process_events()
+    assert sip.isdeleted(client)
+    assert client.current_error() == "Setting the frequency failed: not connected to rigctld"
+    client.stop()
+    assert client.current_error() == ""
 
 
 # --------------------------------------------------------------------------- lifecycle

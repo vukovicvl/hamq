@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from hamq.core import hamlib
-from hamq.core.modes import display_mode
+from hamq.core.modes import dedup_mode, display_mode
 from hamq.core.rigmode import (
     ADIF_MODES,
     DATA_RIG_MODES,
@@ -101,9 +101,11 @@ def test_every_hamlib_mode_is_mapped_or_a_deliberate_choice():
 
 
 def test_rig_ssb_is_logged_as_plain_ssb():
-    # display_mode (statistics, dedup) must show SSB, as for SSB QSOs from other loggers
+    # display_mode (statistics) must show SSB, as for SSB QSOs from most other loggers;
+    # the duplicate key is SSB for every way of writing SSB (tests/core/test_modes.py)
     assert display_mode(*adif_mode("USB")) == "SSB"
     assert display_mode(*adif_mode("LSB")) == "SSB"
+    assert dedup_mode(*adif_mode("USB")) == dedup_mode("SSB", "USB") == "SSB"
 
 
 @pytest.mark.parametrize(

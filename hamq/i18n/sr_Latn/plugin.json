@@ -19,7 +19,7 @@
   "Log QSO...": "Upiši vezu...",
   "Maidenhead grid...": "Maidenhead mreža...",
   "Point antenna on map": "Usmeri antenu klikom na mapu",
-  "Recalculate distances and paths...": "Ponovo izračunaj rastojanja i putanje...",
+  "Recalculate distances and DXCC data...": "Ponovo izračunaj rastojanja i DXCC podatke...",
   "Receive QSOs and status from WSJT-X or JTDX over UDP": "Prijem veza i statusa iz WSJT-X-a ili JTDX-a preko UDP-a",
   "Settings...": "Podešavanja...",
   "Show HamQ panel": "Prikaži HamQ panel",

@@ -82,7 +82,10 @@ supports unicast and multicast, and reports a busy port clearly. This is the
 - `start(address, port) -> bool` stops first, so calling it while running restarts.
   - `address` is the address set in WSJT-X:
     - `""` means any address, and `localhost` means 127.0.0.1.
-    - Any IPv4 unicast address listens on all interfaces.
+    - ~~Any IPv4 unicast address listens on all interfaces.~~ Release pass: the socket
+      binds the address itself (127.0.0.1 by default: only programs on this computer can
+      send); `""` / `0.0.0.0`, a multicast group and a broadcast address bind `AnyIPv4`.
+      An address that is not one of this computer gives a translated error.
     - An IPv4 multicast address (224.0.0.0/4) joins that group.
     - IPv6, host names and garbage give `False` plus a translated `errorOccurred`.
   - `port` must be an `int` from 1 to 65535; `bool`, `float` and `str` are rejected.
@@ -96,6 +99,12 @@ supports unicast and multicast, and reports a busy port clearly. This is the
   - Other bind errors: `Cannot listen on UDP port {port}: {Qt error}. If another program
     ...`, with the same hint.
   - Join failure: `Could not join the multicast group 224.0.0.1: {Qt error}`.
+  - Release pass, address not of this computer (`SocketAddressNotAvailableError`):
+    `Cannot listen on 192.0.2.1 (UDP port 2237): 192.0.2.1 is not an address of this
+    computer. In the HamQ settings, enter the address WSJT-X sends to (File > Settings >
+    Reporting > UDP Server), usually 127.0.0.1.`
+  - Release pass: `current_error()` returns the problem of the last failed `start()`,
+    translated again in the current language (`""` after a successful start).
 - Signals, in the order they are emitted:
   - Every decoded message marks its client id alive, including QSO Logged (type 5) and
     other types, which emit nothing else. The first live client emits
@@ -172,3 +181,25 @@ supports unicast and multicast, and reports a busy port clearly. This is the
   text says "any message marks the client alive", which is what is implemented.
 - Any program that sends WSJT-X-format messages to the group would count as a client.
   Servers normally send replies to the client's own port, not to 2237.
+- **Release pass (2026-10-01)** (net fixer):
+  - **Bind rule changed:** the listener used to bind `AnyIPv4` for every unicast address,
+    so any host on the LAN could send a Logged ADIF datagram and add QSOs to the log
+    (bandit B104, binding all interfaces). It now binds the configured address; with the
+    default 127.0.0.1 only programs on this computer reach it. Listening on the network
+    is an explicit choice: `0.0.0.0` (or an empty address), a LAN address of this
+    computer, multicast or broadcast. WSJT-X on another computer needs this computer's
+    LAN address or `0.0.0.0` in the HamQ settings.
+  - **Linux side effect, for the better:** a socket bound to 127.0.0.1 is more specific
+    than another program's `0.0.0.0` + `SO_REUSEADDR` socket on the same port, so HamQ now
+    gets the unicast datagrams sent to 127.0.0.1 whatever the start order (before, the
+    program that bound last got them). Multicast remains the way to share WSJT-X with
+    other programs (first note above).
+  - The start log line names the address: "Listening for WSJT-X messages on {address},
+    UDP port {port}" (Serbian: "Prijem WSJT-X poruka na adresi {address}, UDP port
+    {port}"). The UDP socket uses `QNetworkProxy.NoProxy`: without it Qt asked for the
+    system proxy configuration, synchronously in the GUI thread.
+  - Still open (net): client ids from datagrams are logged unescaped ("WSJT-X connected:
+    {client}"); the Log Messages panel of QGIS 3.34 to 3.40.6 and 3.42.0 / 3.42.1 renders
+    them as HTML (`compat.LOG_PANEL_SHOWS_HTML`), so a crafted client id can show a
+    clickable link there (verified on 3.34.15). With the default 127.0.0.1 only local
+    programs can send such a datagram.

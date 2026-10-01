@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from hamq.core import adif, geo, i18n, maidenhead, modes, qso
+from hamq.core import adif, geo, i18n, maidenhead, modes, qso, rigmode
 from hamq.core.cty import CtyDatabase
 from hamq.core.qso import (
     PATH_FIELDS,
@@ -580,7 +580,7 @@ def test_every_fixture_converts_consistently(path, cty_db):
         assert q.qso_datetime.tzinfo is UTC
         assert q.source == "adif:x.adi"
         assert q.dedup_key.startswith(f"{q.call}|{q.qso_datetime:%Y%m%d%H%M}|")
-        assert q.dedup_key.endswith(f"|{q.band or ''}|{q.display_mode}")
+        assert q.dedup_key.endswith(f"|{q.band or ''}|{modes.dedup_mode(q.mode, q.submode)}")
         extra = json.loads(q.adif_extra)
         assert isinstance(extra, dict)
         assert set(extra).isdisjoint(MAPPED)
@@ -617,6 +617,8 @@ def test_every_fixture_converts_consistently(path, cty_db):
         pytest.param({"CALL": "YU7XYZ/MM"}, None, None, id="mm-none"),
         pytest.param({"CALL": "JA1XYZ"}, None, None, id="unknown-entity"),
         pytest.param({"GRIDSQUARE": "ZZ99"}, CTY_SERBIA, "cty", id="invalid-grid-cty"),
+        pytest.param({"GRIDSQUARE": "KN"}, CTY_SERBIA, "cty", id="field-cty-inside-it"),
+        pytest.param({"GRIDSQUARE": "KN04"}, (44.5, 21.0), "grid", id="square-beats-cty"),
         pytest.param(
             {"LAT": "N091 00.000", "LON": "E020 00.000", "GRIDSQUARE": "JN95wg"},
             JN95WG,
@@ -639,6 +641,80 @@ def test_position_without_cty_database():
         "QSO YU7XYZ, 20260915 1845: no position (no LAT/LON, valid locator or cty.dat entity), "
         "the QSO is not shown on the map"
     ]
+
+
+FIELD_WARNING = (
+    "{record}: locator {value} in GRIDSQUARE is only a Maidenhead field (20° x 10°), "
+    "the QSO is placed at its center"
+)
+
+
+def test_field_locator_gives_way_to_cty_inside_the_field(cty_db):
+    """Review finding: GRIDSQUARE 'JN' put a Croatian station in northern Italy (field
+    centre 45.0, 10.0; 823 km) ahead of the cty.dat entity (45.18, 15.3; 408 km)."""
+    q, warnings = one({"CALL": "9A2XYZ", "GRIDSQUARE": "JN"}, cty=cty_db)
+    assert q.gridsquare == "JN"  # kept as logged
+    assert_position(q, CTY_CROATIA, "cty")
+    assert q.distance_km == pytest.approx(geo.distance_km(*KN04FT, *CTY_CROATIA), rel=1e-12)
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    ("call", "field", "use_cty", "centre", "dxcc"),
+    [
+        pytest.param("9A2XYZ", "jn", False, (45.0, 10.0), None, id="no-cty"),
+        # the cty.dat entity is not in the excerpt
+        pytest.param("JA1XYZ", "PM", True, (35.0, 130.0), None, id="unknown-entity"),
+        # the USA position of cty.dat (37.6, -91.87) is in EM, the station in FN: the
+        # field is nearer to the truth than the centre of a large entity
+        pytest.param("W1XYZ", "FN", True, (45.0, -70.0), 291, id="cty-outside-the-field"),
+        # DM (30..40 N, 120..100 W): the latitude of the USA position is in it, not the
+        # longitude; EN (40..50 N, 100..80 W): the longitude, not the latitude
+        pytest.param("W6XYZ", "DM", True, (35.0, -110.0), 291, id="cty-east-of-the-field"),
+        pytest.param("W9XYZ", "EN", True, (45.0, -90.0), 291, id="cty-south-of-the-field"),
+    ],
+)
+def test_field_locator_is_its_center_with_a_warning(call, field, use_cty, centre, dxcc, cty_db):
+    q, warnings = one({"CALL": call, "GRIDSQUARE": field}, cty=cty_db if use_cty else None)
+    assert q.gridsquare == field.upper()
+    assert_position(q, centre, "grid")
+    assert q.dxcc == dxcc  # the DXCC data still comes from cty.dat
+    label = f"QSO {call}, 20260915 1845"
+    assert warnings == [FIELD_WARNING.format(record=label, value=field.upper())]
+
+
+@pytest.mark.parametrize(
+    ("lat", "lon", "inside"),
+    [
+        (45.18, 15.3, True),
+        (40.0, 0.0, True),  # edges belong to the field
+        (50.0, 20.0, True),
+        (39.999, 10.0, False),
+        (45.0, 20.001, False),
+        (45.0, -0.001, False),
+    ],
+)
+def test_a_position_inside_a_field(lat, lon, inside):
+    assert qso._inside("JN", lat, lon) is inside
+
+
+def test_field_locator_in_a_log_is_reported_by_record(cty_db):
+    records = [
+        {"CALL": "W1XYZ", "QSO_DATE": "20260915", "TIME_ON": "1845", "GRIDSQUARE": "FN"},
+        {"CALL": "9A2XYZ", "QSO_DATE": "20260915", "TIME_ON": "1846", "GRIDSQUARE": "JN"},
+    ]
+    qsos, warnings = records_to_qsos(records, station=HOME, cty=cty_db)
+    assert [q.loc_source for q in qsos] == ["grid", "cty"]
+    assert warnings == [FIELD_WARNING.format(record="Record 1 (W1XYZ, 20260915 1845)", value="FN")]
+
+
+def test_lat_lon_beat_a_field_locator_without_a_warning(cty_db):
+    q, warnings = one(
+        {"CALL": "W1XYZ", "GRIDSQUARE": "FN", "LAT": "N042 30.000", "LON": "W071 00.000"},
+        cty=cty_db,
+    )
+    assert_position(q, FN42, "latlon")
+    assert warnings == []
 
 
 @pytest.mark.parametrize(
@@ -716,6 +792,97 @@ def test_invalid_station_locator_is_reported_once():
     ]
     _, single = record_to_qso(records[0], station=station)
     assert single[0] == "My locator KN04f is invalid, ignored"
+
+
+@pytest.mark.parametrize(
+    ("my_grid", "station", "origin", "stored"),
+    [
+        # a coarser version of my locator (WSJT-X "My Grid" KN04): my station's locator
+        pytest.param("KN04", "KN04ft", KN04FT, "KN04ft", id="square-of-my-subsquare"),
+        pytest.param("kn04", "kn04FT", KN04FT, "KN04ft", id="any-case"),
+        pytest.param("KN", "KN04ft", KN04FT, "KN04ft", id="field-of-my-subsquare"),
+        pytest.param(
+            "KN04FT",
+            "KN04ft12",
+            maidenhead.to_latlon("KN04ft12"),
+            "KN04ft12",
+            id="subsquare-of-my-extended-square",
+        ),
+        # the same or a finer locator, or another cell (portable): the record's own
+        pytest.param("KN04ft", "KN04ft", KN04FT, "KN04ft", id="same"),
+        pytest.param(
+            "KN04ft12", "KN04ft", maidenhead.to_latlon("KN04ft12"), "KN04ft12", id="finer"
+        ),
+        pytest.param(
+            "KN04fu", "KN04ft", maidenhead.to_latlon("KN04fu"), "KN04fu", id="next-subsquare"
+        ),
+        pytest.param("KN05", "KN04ft", (45.5, 21.0), "KN05", id="next-square"),
+        pytest.param("JN95wg", "KN04ft", JN95WG, "JN95wg", id="portable"),
+        # no usable station locator: the record's
+        pytest.param("KN04", "", (44.5, 21.0), "KN04", id="no-station-locator"),
+        pytest.param("KN04", "KN04f", (44.5, 21.0), "KN04", id="invalid-station-locator"),
+    ],
+)
+def test_coarser_my_gridsquare_gives_way_to_my_station_locator(my_grid, station, origin, stored):
+    q, _ = one(
+        {"CALL": "W1XYZ", "GRIDSQUARE": "FN42", "MY_GRIDSQUARE": my_grid},
+        station=Station(call="YU1QQ", grid=station),
+    )
+    assert_origin(q, origin)
+    assert q.my_gridsquare == stored
+    assert q.distance_km == pytest.approx(geo.distance_km(*origin, *FN42), rel=1e-12)
+    assert q.bearing_deg == pytest.approx(geo.bearing_deg(*origin, *FN42), rel=1e-12)
+
+
+def test_wsjtx_my_grid_of_four_characters_on_2m():
+    """Review finding: WSJT-X "My Grid" KN04 with KN04ft in the HamQ settings moved the
+    origin 55 km to the centre of KN04 (a 2 m QSO to Novi Sad: 123.3 km instead of 68.5 km),
+    and the stored bearing no longer agreed with the rotator map tool (station locator)."""
+    record = {
+        "CALL": "YU7XYZ",
+        "QSO_DATE": "20260920",
+        "TIME_ON": "1000",
+        "BAND": "2m",
+        "MODE": "FM",
+        "GRIDSQUARE": "JN95wg",
+        "MY_GRIDSQUARE": "KN04",
+    }
+    q, warnings = record_to_qso(record, station=HOME, source="wsjtx")
+    without, _ = record_to_qso(
+        {k: v for k, v in record.items() if k != "MY_GRIDSQUARE"}, station=HOME
+    )
+    assert warnings == []
+    assert q.my_gridsquare == "KN04ft"
+    assert_origin(q, KN04FT)
+    assert (q.distance_km, q.bearing_deg) == (without.distance_km, without.bearing_deg)
+    # independent haversine (R 6371.0088 km): KN04ft -> JN95wg 68.54 km, 318.24 degrees
+    assert q.distance_km == pytest.approx(68.54, abs=0.01)
+    assert q.bearing_deg == pytest.approx(318.24, abs=0.01)
+
+
+def test_a_log_with_a_coarse_my_gridsquare(cty_db):
+    records = [{**record, "MY_GRIDSQUARE": "KN04"} for record in read_records("wsjtx_log.adi")]
+    qsos, warnings = records_to_qsos(records, station=HOME, cty=cty_db)
+    assert len(qsos) == 6
+    assert all(q.my_gridsquare == "KN04ft" for q in qsos)
+    assert all((q.my_lat, q.my_lon) == pytest.approx(KN04FT) for q in qsos)
+    assert warnings == [NO_POSITION_SUMMARY.format(count=1)]  # OH2XYZ/MM, as before
+
+
+def test_coarse_my_gridsquare_next_to_my_lat_lon_is_kept_as_logged():
+    # MY_LAT / MY_LON give the origin; MY_GRIDSQUARE stays as the log has it
+    q, warnings = one(
+        {
+            "CALL": "W1XYZ",
+            "GRIDSQUARE": "FN42",
+            "MY_LAT": "N044 48.750",
+            "MY_LON": "E020 27.672",
+            "MY_GRIDSQUARE": "KN04",
+        }
+    )
+    assert warnings == []
+    assert_origin(q, BEOGRAD)
+    assert q.my_gridsquare == "KN04"
 
 
 @pytest.mark.parametrize(
@@ -863,20 +1030,23 @@ def test_invalid_freq(value):
 
 
 @pytest.mark.parametrize(
-    ("mode", "submode", "stored", "shown"),
+    ("mode", "submode", "stored", "shown", "key_mode"),
     [
-        ("FT8", None, ("FT8", None), "FT8"),
-        ("ft8", "", ("FT8", None), "FT8"),
-        ("MFSK", "FT4", ("MFSK", "FT4"), "FT4"),
-        ("mfsk", "ft4", ("MFSK", "FT4"), "FT4"),
-        ("FT4", None, ("FT4", None), "FT4"),
-        ("SSB", "USB", ("SSB", "USB"), "USB"),
-        (None, "JS8", (None, "JS8"), "JS8"),
-        (None, None, (None, None), ""),
-        ("  ", " ", (None, None), ""),
+        ("FT8", None, ("FT8", None), "FT8", "FT8"),
+        ("ft8", "", ("FT8", None), "FT8", "FT8"),
+        ("MFSK", "FT4", ("MFSK", "FT4"), "FT4", "FT4"),
+        ("mfsk", "ft4", ("MFSK", "FT4"), "FT4", "FT4"),
+        ("FT4", None, ("FT4", None), "FT4", "FT4"),
+        # the sideband is kept and shown, the duplicate key counts every SSB QSO as SSB
+        ("SSB", "USB", ("SSB", "USB"), "USB", "SSB"),
+        ("usb", None, ("USB", None), "USB", "SSB"),
+        ("PSK", "PSK31", ("PSK", "PSK31"), "PSK31", "PSK"),
+        (None, "JS8", (None, "JS8"), "JS8", "JS8"),
+        (None, None, (None, None), "", ""),
+        ("  ", " ", (None, None), "", ""),
     ],
 )
-def test_mode_and_submode(mode, submode, stored, shown):
+def test_mode_and_submode(mode, submode, stored, shown, key_mode):
     record = {"CALL": "W1XYZ", "GRIDSQUARE": "FN42", "BAND": "20m"}
     if mode is not None:
         record["MODE"] = mode
@@ -885,7 +1055,8 @@ def test_mode_and_submode(mode, submode, stored, shown):
     q, _ = one(record)
     assert (q.mode, q.submode) == stored
     assert q.display_mode == shown == display_mode(q.mode, q.submode)
-    assert q.dedup_key == f"W1XYZ|202609151845|20m|{shown}"
+    assert key_mode == modes.dedup_mode(q.mode, q.submode)
+    assert q.dedup_key == f"W1XYZ|202609151845|20m|{key_mode}"
 
 
 def test_ft4_dedup_key_is_the_same_both_ways():
@@ -896,6 +1067,131 @@ def test_ft4_dedup_key_is_the_same_both_ways():
     assert new.dedup_key == adif.dedup_key("9A2XYZ", "20260913", "192030", "40m", "FT4")
     other, _ = record_to_qso({**base, "MODE": "FT8"})
     assert other.dedup_key != new.dedup_key
+
+
+# The two SSB QSOs of log4om.adi (records 1 and 2, MODE=SSB) as a logger that keeps the
+# sideband writes them (MODE=SSB SUBMODE=USB / LSB) and as LoTW reports them (MODE=SSB,
+# uppercase band, rounded FREQ).
+SSB_WITH_SIDEBAND = [
+    {
+        "CALL": "VK2XYZ",
+        "QSO_DATE": "20260918",
+        "TIME_ON": "063012",
+        "BAND": "20m",
+        "FREQ": "14.195000",
+        "MODE": "SSB",
+        "SUBMODE": "USB",
+        "GRIDSQUARE": "QF56od",
+    },
+    {
+        "CALL": "9A3XYZ",
+        "QSO_DATE": "20260918",
+        "TIME_ON": "071544",
+        "BAND": "40m",
+        "FREQ": "7.155000",
+        "MODE": "SSB",
+        "SUBMODE": "LSB",
+    },
+]
+SSB_FROM_LOTW = [
+    {
+        "CALL": "VK2XYZ",
+        "BAND": "20M",
+        "FREQ": "14.19500",
+        "MODE": "SSB",
+        "QSO_DATE": "20260918",
+        "TIME_ON": "063012",
+        "GRIDSQUARE": "QF56",
+    },
+    {
+        "CALL": "9A3XYZ",
+        "BAND": "40M",
+        "FREQ": "7.15500",
+        "MODE": "SSB",
+        "QSO_DATE": "20260918",
+        "TIME_ON": "071544",
+    },
+]
+
+
+def test_ssb_with_its_sideband_dedups_with_plain_ssb(cty_db):
+    """Review finding: SSB + USB/LSB and plain SSB were two QSOs (stored twice)."""
+    sideband, _ = records_to_qsos(SSB_WITH_SIDEBAND, station=HOME, cty=cty_db)
+    lotw, _ = records_to_qsos(SSB_FROM_LOTW, station=HOME, cty=cty_db)
+    log4om, _ = convert("log4om.adi", cty_db)
+    keys = ["VK2XYZ|202609180630|20m|SSB", "9A3XYZ|202609180715|40m|SSB"]
+    assert [q.dedup_key for q in sideband] == keys
+    assert [q.dedup_key for q in lotw] == keys
+    assert [q.dedup_key for q in log4om[:2]] == keys
+    # the logged sideband is kept and shown
+    assert [(q.mode, q.submode, q.display_mode) for q in sideband] == [
+        ("SSB", "USB", "USB"),
+        ("SSB", "LSB", "LSB"),
+    ]
+
+
+def test_manual_ssb_qso_dedups_with_lotw_and_older_loggers():
+    """The manual QSO dialog writes SSB with the chosen submode, or plain SSB from the radio."""
+    when = {"CALL": "VK2ABC", "QSO_DATE": "20260930", "BAND": "20m"}
+    mode, _ = rigmode.split_mode("SSB")
+    records = {
+        "dialog, submode USB": {**when, "TIME_ON": "1845", "MODE": mode, "SUBMODE": "USB"},
+        "dialog, submode LSB": {**when, "TIME_ON": "1845", "MODE": mode, "SUBMODE": "LSB"},
+        "dialog, radio in USB": {**when, "TIME_ON": "1845", "MODE": rigmode.adif_mode("USB")[0]},
+        "LoTW": {**when, "TIME_ON": "184512", "BAND": "20M", "MODE": "SSB"},
+        "older logger": {**when, "TIME_ON": "184559", "MODE": "USB"},
+    }
+    keys = {name: record_to_qso(record)[0].dedup_key for name, record in records.items()}
+    assert set(keys.values()) == {"VK2ABC|202609301845|20m|SSB"}, keys
+
+
+@pytest.mark.parametrize(
+    ("variants", "key"),
+    [
+        pytest.param(
+            # xlog writes MODE=PSK31 (ADIF 2), HamQ with the radio in PSK writes MODE=PSK
+            [("PSK31", None), ("PSK", None), ("PSK", "PSK31"), ("psk", "psk31")],
+            "PSK",
+            id="psk",
+        ),
+        pytest.param(
+            # WSJT-X writes JT65 without a submode
+            [("JT65", None), ("JT65", "JT65B"), ("JT65B", None)],
+            "JT65",
+            id="jt65",
+        ),
+        pytest.param([("OLIVIA", None), ("OLIVIA", "OLIVIA 8/250")], "OLIVIA", id="olivia"),
+        pytest.param([("CW", None), ("CW", "PCW")], "CW", id="cw"),
+        pytest.param([("FT4", None), ("MFSK", "FT4")], "FT4", id="ft4"),
+        pytest.param([("C4FM", None), ("DIGITALVOICE", "C4FM")], "C4FM", id="c4fm"),
+    ],
+)
+def test_one_qso_written_in_different_ways_has_one_key(variants, key):
+    base = {"CALL": "DL7XYZ", "QSO_DATE": "20260927", "TIME_ON": "063000", "BAND": "20m"}
+    keys = set()
+    for mode, submode in variants:
+        record = {**base, "MODE": mode}
+        if submode is not None:
+            record["SUBMODE"] = submode
+        keys.add(record_to_qso(record)[0].dedup_key)
+    assert keys == {f"DL7XYZ|202609270630|20m|{key}"}
+
+
+def test_xlog_psk31_dedups_with_an_adif3_export(cty_db):
+    qsos, _ = convert("xlog.adi", cty_db)
+    dl = qsos[2]
+    assert (dl.call, dl.mode, dl.submode, dl.display_mode) == ("DL7XYZ", "PSK31", None, "PSK31")
+    adif3, _ = one(
+        {
+            "CALL": "DL7XYZ",
+            "QSO_DATE": "20260927",
+            "TIME_ON": "0630",
+            "BAND": "20m",
+            "MODE": "PSK",
+            "SUBMODE": "PSK31",
+        }
+    )
+    assert dl.dedup_key == adif3.dedup_key == "DL7XYZ|202609270630|20m|PSK"
 
 
 def test_rst_values_are_kept_as_logged():
@@ -1291,6 +1587,22 @@ def test_warnings_in_cyrillic():
     ]
 
 
+@pytest.mark.usefixtures("serbian")
+def test_field_locator_warning_in_serbian():
+    record = {"CALL": "9A2XYZ", "QSO_DATE": "20260915", "TIME_ON": "1845", "GRIDSQUARE": "JN"}
+    _, warnings = record_to_qso(record, station=HOME)
+    assert warnings == [
+        "Veza 9A2XYZ, 20260915 1845: lokator JN u GRIDSQUARE označava samo Maidenhead polje "
+        "(20° x 10°), veza je postavljena u njegov centar"
+    ]
+    i18n.set_language(i18n.LANG_SR_CYRL)
+    _, warnings = record_to_qso(record, station=HOME)
+    assert warnings == [
+        "Веза 9A2XYZ, 20260915 1845: локатор JN у GRIDSQUARE означава само Maidenhead поље "
+        "(20° x 10°), веза је постављена у његов центар"
+    ]
+
+
 # --- robustness and speed ---------------------------------------------------------------------
 
 TRICKY = [
@@ -1309,6 +1621,9 @@ TRICKY = [
     "20M",
     "KN04ft",
     "kn04FT",
+    "KN04",
+    "JN",
+    "kn",
     "ZZ00",
     "JN75xt74oj",
     "N044 48.750",
@@ -1323,6 +1638,8 @@ TRICKY = [
     "184559",
     "EU",
     "xx",
+    "USB",
+    "PSK31",
     "Đorđe",
     "٢٩١",
     "２９１",

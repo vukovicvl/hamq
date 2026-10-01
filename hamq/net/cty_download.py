@@ -19,7 +19,9 @@ A download (:meth:`CtyManager.download`):
    (UTC, ISO 8601) is stored in ``HamQSettings.cty_downloaded``.
 
 Every download that starts ends with exactly one ``downloadFinished(ok, message)`` with a
-translated message. On any failure the cached files stay as they were.
+translated message. On any failure the cached files stay as they were. When the server
+cannot be reached (no internet: host not found, refused, timed out) the message says so in
+plain words; Qt's English error text goes to the HamQ log only.
 
 :func:`load_cached_cty` reads the cache without network access and without Qt objects, so
 Processing algorithms and ``QgsTask`` workers can call it. The parsed database is kept per
@@ -53,9 +55,15 @@ from ..qgis_io.compat import (
     NET_ATTR_HTTP_STATUS,
     NET_ATTR_REDIRECT_POLICY,
     NET_CACHE_ALWAYS_NETWORK,
+    NET_CONNECTION_REFUSED,
+    NET_HOST_NOT_FOUND,
+    NET_NETWORK_SESSION_FAILED,
     NET_NO_ERROR,
     NET_OPERATION_CANCELED,
     NET_REDIRECT_NO_LESS_SAFE,
+    NET_TEMPORARY_NETWORK_FAILURE,
+    NET_TIMEOUT,
+    NET_UNKNOWN_NETWORK_ERROR,
 )
 from ..settings import HamQSettings, cty_cache_path
 
@@ -66,6 +74,15 @@ _DAT = "cty.dat"
 _CSV = "cty.csv"
 # Release marker of the country files: "=VER20260915" (an exact call under Canada).
 _VERSION_RE = re.compile(r"=VER(\d{4})(\d{2})(\d{2})\b")
+# QNetworkReply errors that mean the server cannot be reached (no internet, server down).
+_NO_CONNECTION = (
+    NET_CONNECTION_REFUSED,
+    NET_HOST_NOT_FOUND,
+    NET_TIMEOUT,
+    NET_TEMPORARY_NETWORK_FAILURE,
+    NET_NETWORK_SESSION_FAILED,
+    NET_UNKNOWN_NETWORK_ERROR,
+)
 
 # Parsed databases by cache path: {key: (signature of the files, database or None)}. The UI
 # thread and worker threads may load at the same time: the lock makes the second caller wait
@@ -507,6 +524,14 @@ class CtyManager(QObject):
             return tr("{file}: the request was aborted by the network timeout of QGIS").format(
                 file=name
             )
+        if error in _NO_CONNECTION:
+            # Say what to do; Qt's text (English, e.g. "Host ... not found") is for the log.
+            _log(f"{name}: {reply.errorString()}", MSG_INFO)
+            host = reply.url().host() or reply.request().url().host() or name
+            return tr(
+                "the server {host} cannot be reached; check the internet connection or try "
+                "again later"
+            ).format(host=host)
         return f"{name}: {reply.errorString()}"
 
     def _too_large(self) -> str:

@@ -190,4 +190,31 @@ Manual checks still needed:
   `hamq.core`, `hamq.processing` and `hamq.qgis_io` in `sys.modules` (QGIS
   tracks only modules imported through its import hook). Their submodules are
   unloaded, so a reload works; only edits to those `__init__.py` files need a
-  QGIS restart.
+  QGIS restart. Resolved in the release pass: `classFactory` imports every
+  subpackage by name, so QGIS records and unloads them all (a plugin upgrade no
+  longer keeps the modules of the old version).
+- **Release pass (2026-10-01):**
+  - `hamq/core/__init__.py` has `from __future__ import annotations` now;
+    `hamq/__init__.py` still lacks it (plugin area), so `FUTURE_IMPORT_PENDING` in
+    `tests/core/test_architecture.py` holds only that file and its check is the one
+    xfail of the architecture tests.
+  - `metadata.txt`: `license=GPL-3.0-or-later`, the id `pyproject.toml` already used (the
+    README says "version 3"; the LICENSE text is the GPL v3); `about` says that cty.dat is
+    downloaded with one click (offered at the first start), mentions extended squares and
+    no longer claims that every QSO is on the map (QSOs without a position are not drawn);
+    new plain-text `changelog` key for the QGIS plugin manager and plugins.qgis.org.
+  - `supportsQt6=True` stays although plugins.qgis.org now marks it as deprecated (QGIS
+    4 compatibility is decided by `qgisMaximumVersion`, and the upload shows a warning):
+    QGIS 3.x builds on Qt6 mark a plugin without the key as incompatible
+    (`pyplugin_installer/installer_data.py` of 3.44). Do not remove it;
+    `tests/core/test_package.py` and `test_plugin_load` assert it.
+  - `scripts/package.py`: data files are never packed (`cty.dat`, `cty.csv`, `*.gpkg*`,
+    `*.adi`, `*.sqlite`, ... anywhere under `hamq/`, listed as skipped); a file of an
+    unexpected type stops the build; `--release` also requires a `## [<version>]` section
+    in CHANGELOG.md, a `changelog` in metadata.txt that names the version (plain text),
+    and no uncommitted or untracked files under `hamq/` in a git checkout
+    (docs/RELEASING.md). 19 new tests in `tests/core/test_package.py`.
+  - CI: the QGIS matrix runs 3.34 (`qgis/qgis:3.34`, the minimum version, desktop image
+    with QtSvg), 3.44, 4.0 and 4.2 (`qgis/qgis:4.2-trixie`); 3.34 and 4.2 run with the
+    same Docker options as `scripts/test_qgis.sh`, which has no target for those images
+    yet.

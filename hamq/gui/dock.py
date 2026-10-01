@@ -28,20 +28,23 @@ Setters never emit these signals, except ``pointOnMapToggled(False)`` as describ
 Every text is translated with :func:`hamq.core.i18n.tr` and re-applied from the last
 known state by :meth:`HamQDock.retranslate`, which runs on
 ``events().languageChanged``. Numbers use the decimal separator of the HamQ language
-(``14.074000`` / ``14,074000``). Call :meth:`HamQDock.cleanup` before deleting the dock
+(``14.074000`` / ``14,074000``). Every label shows plain text and tooltips are escaped:
+callsigns, countries and client names come from log files and the network and must
+never be rendered as markup. Call :meth:`HamQDock.cleanup` before deleting the dock
 (deleting it also drops its connections to ``events()``, as a safety net).
 """
 
 from __future__ import annotations
 
 import functools
+import html
 import math
 import traceback
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from qgis.core import QgsMessageLog
-from qgis.PyQt.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
+from qgis.PyQt.QtCore import QLocale, QPointF, QRectF, QSize, Qt, pyqtSignal
 from qgis.PyQt.QtGui import QColor, QFont, QPainter, QPalette, QPen, QTextOption, QValidator
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
@@ -69,7 +72,7 @@ from qgis.PyQt.QtWidgets import (
 from ..core import hamlib, maidenhead
 from ..core.adif import parse_freq, parse_qso_datetime
 from ..core.bands import band_from_freq
-from ..core.i18n import current_language, is_serbian, tr, tr_noop
+from ..core.i18n import LANG_SR_CYRL, LANG_SR_LATN, current_language, is_serbian, tr, tr_noop
 from ..core.modes import display_mode
 from ..events import events
 from ..qgis_io import compat
@@ -77,6 +80,7 @@ from ..qgis_io.fields import from_qdatetime
 from . import get_icon
 
 __all__ = [
+    "DecimalSpinBox",
     "HamQDock",
     "decimal_separator",
     "format_azimuth",
@@ -85,6 +89,7 @@ __all__ = [
     "format_mhz",
     "format_number",
     "format_utc",
+    "hamq_locale",
 ]
 
 LOG_TAG = "HamQ"
@@ -130,6 +135,21 @@ _TARGET_COLOR = QColor("#1c7ed6")
 def decimal_separator() -> str:
     """Decimal separator of the HamQ interface language: ``","`` in Serbian, else ``"."``."""
     return "," if is_serbian(current_language()) else "."
+
+
+def hamq_locale() -> QLocale:
+    """``QLocale`` of the HamQ interface language, for Qt widgets that format by locale.
+
+    Serbian (Latin or Cyrillic script, Serbia) in Serbian; otherwise the neutral ``C``
+    locale: English names, a decimal point and weeks from Monday. The system locale is
+    never used, so e.g. a calendar names its months in the HamQ language.
+    """
+    language = current_language()
+    if language == LANG_SR_LATN:
+        return QLocale("sr_Latn_RS")
+    if language == LANG_SR_CYRL:
+        return QLocale("sr_Cyrl_RS")
+    return QLocale.c()
 
 
 def format_number(value: float, decimals: int = 0, *, group: bool = True) -> str:
@@ -248,6 +268,18 @@ def _text(value: object) -> str:
 def _host(address: str) -> str:
     """``address`` for ``host:port`` display; IPv6 addresses get brackets."""
     return f"[{address}]" if ":" in address and not address.startswith("[") else address
+
+
+def _tooltip(text: str) -> str:
+    """``text`` for ``setToolTip``, shown exactly as it is.
+
+    Qt renders a tooltip that looks like markup as rich text and cannot be told
+    otherwise, so text with ``<`` or ``&`` (e.g. from a log file or a UDP datagram) is
+    escaped inside ``<qt>``; other text is returned unchanged.
+    """
+    if "<" not in text and "&" not in text:
+        return text
+    return "<qt>" + html.escape(text, quote=False).replace("\n", "<br>") + "</qt>"
 
 
 def _log_error() -> None:
@@ -430,33 +462,28 @@ class _CompassWidget(QWidget):
         painter.drawEllipse(center, 3.0, 3.0)
 
 
-class _FrequencySpinBox(QDoubleSpinBox):
-    """MHz spin box: shows the HamQ decimal separator and accepts both ``.`` and ``,``.
+class DecimalSpinBox(QDoubleSpinBox):
+    """``QDoubleSpinBox`` that shows the HamQ decimal separator and accepts ``.`` and ``,``.
 
-    Neither character is ever read as a thousands separator, so ``14.074`` and
-    ``14,074`` both mean 14.074 MHz whatever the system locale.
+    Neither character is ever read as a thousands separator, so ``36.5`` and ``36,5``
+    both mean 36.5 whatever the system locale (Qt's own spin box takes ``36.5`` for 365
+    under a Serbian or German locale). A leading ``-`` is accepted when the minimum is
+    negative; the prefix and the suffix (e.g. ``°``) may be typed or left out. Call
+    :meth:`refresh_text` after a language change.
     """
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setDecimals(6)
-        self.setRange(0.001, 999999.0)
-        self.setSingleStep(0.001)
-        self.setValue(14.074)
-        self.setAlignment(compat.ALIGN_RIGHT | compat.ALIGN_VCENTER)
-
-    # The three overrides below are C++ virtuals: an exception must never escape into Qt.
+    # The overrides below are C++ virtuals: an exception must never escape into Qt.
 
     def textFromValue(self, value: float) -> str:  # noqa: N802 (Qt override)
         try:
             return format_number(value, self.decimals(), group=False)
         except Exception:
             _log_error()
-            return f"{value:.6f}"
+            return f"{value:.{max(0, self.decimals())}f}"
 
     def valueFromText(self, text: str) -> float:  # noqa: N802 (Qt override)
         try:
-            number = float(text.strip().replace(",", "."))
+            number = float(self._number_text(text).replace(",", "."))
         except (TypeError, ValueError, AttributeError):
             return self.value()
         return number if math.isfinite(number) else self.value()
@@ -468,8 +495,27 @@ class _FrequencySpinBox(QDoubleSpinBox):
             _log_error()
             return QValidator.State.Invalid, text, pos
 
+    def fixup(self, text: str) -> str:
+        """Keep the text: Qt's fixup deletes the locale's thousands separator (36.5 -> 365)."""
+        return text
+
+    def _number_text(self, text: str) -> str:
+        """``text`` without the prefix, the suffix and the spaces around them."""
+        body = text.strip()
+        prefix, suffix = self.prefix().strip(), self.suffix().strip()
+        if prefix and body.startswith(prefix):
+            body = body[len(prefix) :]
+        if suffix and body.endswith(suffix):
+            body = body[: -len(suffix)]
+        return body.strip()
+
     def _validate(self, text: str, pos: int) -> tuple[Any, str, int]:
-        candidate = text.strip().replace(",", ".")
+        candidate = self._number_text(text).replace(",", ".")
+        negative = candidate.startswith("-")
+        if negative:
+            if self.minimum() >= 0:
+                return QValidator.State.Invalid, text, pos
+            candidate = candidate[1:]
         if candidate in ("", "."):
             return QValidator.State.Intermediate, text, pos
         whole, _, fraction = candidate.partition(".")
@@ -478,16 +524,32 @@ class _FrequencySpinBox(QDoubleSpinBox):
             or len(fraction) > self.decimals()
         ):
             return QValidator.State.Invalid, text, pos
-        value = float(candidate)
+        value = -float(candidate) if negative else float(candidate)
+        # More digits move a number away from zero: past the limit on that side it can
+        # never become valid again, on the other side it still can.
         if value > self.maximum():
-            return QValidator.State.Invalid, text, pos
+            state = QValidator.State.Invalid if value > 0 else QValidator.State.Intermediate
+            return state, text, pos
         if value < self.minimum():
-            return QValidator.State.Intermediate, text, pos
+            state = QValidator.State.Invalid if value < 0 else QValidator.State.Intermediate
+            return state, text, pos
         return QValidator.State.Acceptable, text, pos
 
     def refresh_text(self) -> None:
         """Show the value again, e.g. with the decimal separator of a new language."""
         self.setPrefix(self.prefix())  # re-renders the text, keeps the value
+
+
+class _FrequencySpinBox(DecimalSpinBox):
+    """MHz spin box with six decimals: ``14.074`` and ``14,074`` both mean 14.074 MHz."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setDecimals(6)
+        self.setRange(0.001, 999999.0)
+        self.setSingleStep(0.001)
+        self.setValue(14.074)
+        self.setAlignment(compat.ALIGN_RIGHT | compat.ALIGN_VCENTER)
 
 
 def _scroll(widget: QWidget) -> QScrollArea:
@@ -631,6 +693,10 @@ class HamQDock(QDockWidget):
         self._tabs.addTab(_scroll(self._build_wsjtx_tab()), get_icon("wsjtx.svg"), "WSJT-X")
         self._tabs.addTab(_scroll(self._build_radio_tab()), get_icon("radio.svg"), "")
         self.setWidget(self._tabs)
+        # Callsigns, countries, modes and client names come from log files and the
+        # network: no label may render them as markup (QLabel's default is AutoText).
+        for label in self.findChildren(QLabel):
+            label.setTextFormat(compat.TEXT_PLAIN)
 
     def _tool_button(self, icon: str, object_name: str, slot: Callable[..., Any]) -> QToolButton:
         button = QToolButton()
@@ -1314,7 +1380,7 @@ class HamQDock(QDockWidget):
             when = getattr(longest, "qso_datetime", None)
             if when is not None:
                 extra.append(format_utc(when))
-            self._tile_longest.setToolTip(" · ".join(part for part in extra if part))
+            self._tile_longest.setToolTip(_tooltip(" · ".join(part for part in extra if part)))
 
         self._first_label.setText(
             tr("First QSO: {when}").format(when=format_utc(getattr(stats, "first_qso", None)))
@@ -1393,7 +1459,7 @@ class HamQDock(QDockWidget):
                 address=_host(self._listen_address or "0.0.0.0"), port=self._listen_port
             )
         self._wsjtx_state.setText(text)
-        self._wsjtx_led.setToolTip(text)
+        self._wsjtx_led.setToolTip(_tooltip(text))
         _show_error(self._wsjtx_error, self._wsjtx_error_text)
 
     def _render_wsjtx_status(self) -> None:
@@ -1451,7 +1517,7 @@ class HamQDock(QDockWidget):
             self._rig_led.set_state("error")
             text = tr("Not connected")
         self._rig_state_label.setText(text)
-        self._rig_led.setToolTip(text)
+        self._rig_led.setToolTip(_tooltip(text))
         _show_error(self._rig_error, self._rig_error_text if enabled else "")
 
         state = (self._rig_state or {}) if connected else {}
@@ -1505,7 +1571,7 @@ class HamQDock(QDockWidget):
             self._rot_led.set_state("error")
             text = tr("Not connected")
         self._rot_state_label.setText(text)
-        self._rot_led.setToolTip(text)
+        self._rot_led.setToolTip(_tooltip(text))
         _show_error(self._rot_error, self._rot_error_text if enabled else "")
 
         position = self._rot_position if connected else None

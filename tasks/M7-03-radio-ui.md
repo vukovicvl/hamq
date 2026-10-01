@@ -243,3 +243,23 @@ plugin.add_cleanup(tool.cleanup); plugin.add_cleanup(dock.cleanup)
   - "Point on map turns the antenna (beam line, first-use confirmation)";
   - "Manual QSO entry prefilled from the radio";
   - "`core/rigmode.py`: Hamlib mode to ADIF mode mapping".
+- **Release pass (2026-10-01):**
+  - GUI fixer: the first-use confirmation of the rotator map tool names its buttons in
+    the HamQ language through `gui/message_box.py` (`Turn` / `Cancel` -> "Okreni" /
+    "Otkaži"), with Cancel as the default button and the answer for Escape (Qt has no
+    Serbian translation of its standard buttons); the QSO dialog calendar shows month
+    and day names in the HamQ language (`dock.hamq_locale()`); the rotator azimuth
+    fields of the settings dialog accept `.` and `,` (`dock.DecimalSpinBox`).
+  - Core fixer: the `core/rigmode.py` docstring now points the duplicate check to
+    `modes.dedup_mode` (SSB, `SSB` + `USB` / `LSB` and `USB` / `LSB` are the same mode
+    there), while `display_mode` keeps showing `SSB`.
+  - Translations: "Point on map" is "Usmeri klikom na mapu" (like the menu action
+    "Usmeri antenu klikom na mapu"; the long-path tooltip follows); "RST sent" / "RST
+    received" are "Poslati RST" / "Primljeni RST" in the dialog and in the field aliases.
+  - Still open (gui): "Set your QTH locator in Settings to turn the antenna from the
+    map." keeps "Podesite ..." in `gui_rotator_tool.json`, because
+    `tests/qgis/test_rotator_tool.py::test_messages_are_translated` pins that text; the
+    glossary wording "Unesite svoj QTH lokator u podešavanjima da biste antenu okretali
+    klikom na mapu." needs the catalog and that test changed together. The tool's own
+    message-bar fallback (`_show_message`, used when no message callback is given)
+    pushes its text unescaped; the texts are HamQ's own, with numbers only.

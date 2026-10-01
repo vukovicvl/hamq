@@ -27,14 +27,23 @@ blocks it (``QTcpSocket`` signals and ``QTimer`` only):
   after a hard rig error when it cannot reopen the rig) closes the socket, resets
   the parser, drops the queue, reports the problem and reconnects every 5 s until
   :meth:`HamlibClient.stop`. Polling runs only while the socket is connected.
+* **A blocked GUI thread is not a timeout.** QGIS may block its GUI thread for
+  seconds while the daemon answers in time. Commands are therefore sent to the
+  operating system at once (``flush()``), not when the event loop runs again, and a
+  timeout is reported only after one more short pass of the event loop, which
+  delivers a reply (or the connection) that arrived while the thread was blocked.
 * **Connected** (:meth:`HamlibClient.is_connected`, ``connectedChanged``) means
   that the daemon answered a command on the current connection; a port that
   accepts connections but never answers does not flicker between the states.
 * **Errors** are translated texts, logged in the HamQ tab of the QGIS log and
   emitted with ``errorOccurred``; the GUI shows them and must not log them again.
-  Failed set commands are always reported. Poll and connection errors are rate
-  limited: a problem is reported when it starts, not on every poll or reconnect,
-  and a problem that comes back is reported again at most once a minute.
+  Connection errors say what to do (start the daemon, check the address and port in
+  the HamQ settings) instead of ending in Qt's English error text. Failed set
+  commands are always reported. Poll and connection errors are rate limited: a
+  problem is reported when it starts, not on every poll or reconnect, and a problem
+  that comes back is reported again at most once a minute.
+  :meth:`HamlibClient.current_error` translates the problem reported last again, in
+  the current language (after a language switch).
 * Exceptions never escape into Qt: slots log them instead.
 
 Usage (main thread)::
@@ -85,7 +94,10 @@ from ..qgis_io.compat import (
     MSG_INFO,
     MSG_WARNING,
     NET_PROXY_NONE,
+    SOCKET_ERROR_CONNECTION_REFUSED,
+    SOCKET_ERROR_HOST_NOT_FOUND,
     SOCKET_ERROR_REMOTE_CLOSED,
+    SOCKET_ERROR_TIMEOUT,
 )
 
 __all__ = [
@@ -113,14 +125,27 @@ MAX_QUEUE = 16
 _LOG_TAG = "HamQ"
 _MAX_TIMER_MS = 2**31 - 1  # QTimer intervals are C int milliseconds
 _MAX_ERROR_KEYS = 256
+# Before a timeout is reported the event loop gets one more pass of this length (see
+# HamlibClient._settle), again whenever the watchdog fired this much later than due.
+_SETTLE_MS = 100
+_LATE_S = 0.25
 
 # Connection states of the socket.
 _IDLE, _CONNECTING, _CONNECTED = "idle", "connecting", "connected"
 
 # Messages ({daemon}: rigctld or rotctld, {address}: host:port). Translated when shown.
 _MSG_CONNECT_FAILED = tr_noop("Could not connect to {daemon} at {address}: {error}")
+_MSG_CONNECT_REFUSED = tr_noop(
+    "Could not connect to {daemon} at {address}: the connection was refused. "
+    "Start {daemon} or check the address and port in the HamQ settings."
+)
+_MSG_HOST_NOT_FOUND = tr_noop(
+    "Could not connect to {daemon} at {address}: the host name was not found. "
+    "Check the address in the HamQ settings."
+)
 _MSG_CONNECT_TIMEOUT = tr_noop(
-    "Could not connect to {daemon} at {address}: no answer within {seconds} s"
+    "Could not connect to {daemon} at {address}: no answer within {seconds} s. "
+    "Check the address and port in the HamQ settings."
 )
 _MSG_NO_REPLY = tr_noop("{daemon} at {address} did not reply within {seconds} s; reconnecting")
 _MSG_CLOSED = tr_noop("{daemon} at {address} closed the connection; reconnecting")
@@ -224,6 +249,33 @@ def _command(text: str, *, poll: bool = False) -> _Command:
     return _Command(text, expected_command(text), poll)
 
 
+class _Text:
+    """A message kept untranslated: a source text marked with ``tr_noop`` and its values.
+
+    :meth:`render` translates it into the current language, so a problem reported
+    earlier can be shown again after a language switch. A value may be another
+    ``_Text`` or a function that returns a translated text (``error_message(code)``).
+    """
+
+    __slots__ = ("source", "values")
+
+    def __init__(self, source: str, **values: Any) -> None:
+        self.source = source
+        self.values = values
+
+    def render(self) -> str:
+        values = {name: _rendered(value) for name, value in self.values.items()}
+        return tr(self.source).format(**values)
+
+
+def _rendered(value: Any) -> Any:
+    if isinstance(value, _Text):
+        return value.render()
+    if callable(value):
+        return value()
+    return value
+
+
 def _disconnect_all(signal: Any) -> None:
     try:
         signal.disconnect()
@@ -284,7 +336,11 @@ class HamlibClient(QObject):
         self._clock: Callable[[], float] = time.monotonic
         self._error_last: dict[tuple[Any, ...], float] = {}  # key -> time last reported
         self._error_active: set[tuple[Any, ...]] = set()  # problems that did not end yet
+        # The problem reported last and its rate-limit key, until it is over (current_error).
+        self._last_error: tuple[_Text, tuple[Any, ...] | None] | None = None
         self._connected_logged: float | None = None
+        self._watchdog_due = 0.0  # time.monotonic() when the watchdog is due
+        self._settled = False  # the watchdog already gave the event loop one more pass
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(self._poll_ms)
@@ -329,6 +385,7 @@ class HamlibClient(QObject):
             self._started = False
             self._socket = None
             self._confirmed = False
+            self._last_error = None
             return
         self._stop()
 
@@ -347,6 +404,25 @@ class HamlibClient(QObject):
         if ":" in self._host:
             return f"[{self._host}]:{self._port}"
         return f"{self._host}:{self._port}"
+
+    def current_error(self) -> str:
+        """The problem reported last through ``errorOccurred``, translated again into the
+        current language; ``""`` when there is none or it is over.
+
+        For showing that problem again after a language switch (``errorOccurred`` is not
+        emitted again while the problem goes on). It is over when the daemon answers on a
+        new connection, when the failing poll succeeds again, when a new command is given
+        (``set_frequency``, ``set_mode``, ``set_position``, ``stop_rotation``; a refused
+        one is the new problem) and after :meth:`stop` or :meth:`start` with another
+        address. Never raises.
+        """
+        last = self._last_error
+        if last is None:
+            return ""
+        try:
+            return last[0].render()
+        except Exception:  # a broken translation must not break a language switch
+            return ""
 
     def poll_interval(self) -> int:
         """The polling interval in milliseconds."""
@@ -391,12 +467,14 @@ class HamlibClient(QObject):
         self._started = True
         self._error_last.clear()
         self._error_active.clear()
+        self._last_error = None
         self._connected_logged = None
         self._connect()
 
     @_guarded
     def _stop(self) -> None:
         self._started = False
+        self._last_error = None
         self._reconnect_timer.stop()
         if self._drop_link():
             self._announce_disconnected()
@@ -413,7 +491,7 @@ class HamlibClient(QObject):
         self._socket = socket
         self._phase = _CONNECTING
         self._parser.reset()
-        self._watchdog.start(self._timeout_ms)
+        self._arm_watchdog(self._timeout_ms)
         socket.connectToHost(self._host, self._port)  # may report an error synchronously
 
     def _drop_link(self) -> bool:
@@ -460,7 +538,7 @@ class HamlibClient(QObject):
             except RuntimeError:  # already deleted with its parent
                 pass
 
-    def _link_lost(self, key: tuple[Any, ...], message: str) -> None:
+    def _link_lost(self, key: tuple[Any, ...], message: _Text) -> None:
         """The connection failed or ended: drop it, report, reconnect later."""
         if self._socket is None:
             return
@@ -476,7 +554,7 @@ class HamlibClient(QObject):
         for command in lost:
             if self._generation != generation:
                 return
-            self._report_action(command, tr(reason).format(daemon=self._daemon))
+            self._report_action(command, _Text(reason, daemon=self._daemon))
         if self._generation == generation and self._started and self._socket is None:
             self._reconnect_timer.start(self._reconnect_ms)
 
@@ -496,6 +574,7 @@ class HamlibClient(QObject):
         """The daemon answered for the first time on this connection."""
         self._confirmed = True
         self._error_active = {key for key in self._error_active if key[0] != "link"}
+        self._last_error = None  # what went wrong before this connection is over
         now = self._clock()
         last = self._connected_logged
         if last is None or now - last >= self._error_interval_ms / 1000:
@@ -526,8 +605,9 @@ class HamlibClient(QObject):
         ``first`` puts it ahead of the other waiting commands; ``cancel`` names the
         headers of waiting (unsent) commands it makes pointless.
         """
+        self._last_error = None  # a new command: an earlier failure is not the problem now
         if not self._accepting():
-            self._report_action(command, tr(_MSG_NOT_CONNECTED).format(daemon=self._daemon))
+            self._report_action(command, _Text(_MSG_NOT_CONNECTED, daemon=self._daemon))
             return
         drop = {command.header, *cancel}
         self._commands = deque(c for c in self._commands if c.header not in drop)
@@ -578,13 +658,19 @@ class HamlibClient(QObject):
             return
         self._in_flight = command
         self._sent += 1
-        self._watchdog.start(self._timeout_ms)
+        self._arm_watchdog(self._timeout_ms)
         generation = self._generation
         written = socket.write(command.text.encode("utf-8"))
         if self._generation != generation:  # an error was reported inside write()
             return
         if written < 0:
             self._link_lost(("link", "error", socket.errorString()), self._link_error_text(socket))
+            return
+        # Hand it to the operating system now: write() only buffers it until the event loop
+        # runs again. If the GUI thread is blocked before that, the daemon would get the
+        # command only after the block, just before the overdue watchdog runs. An error
+        # inside flush() is reported through _on_socket_error.
+        socket.flush()
 
     # ------------------------------------------------------------------ slots
 
@@ -634,13 +720,17 @@ class HamlibClient(QObject):
             if self._generation != generation:
                 return
         if reply.rprt != 0:
-            self._report_action(command, error_message(reply.rprt), reply.rprt)
+            reason = functools.partial(error_message, reply.rprt)
+            self._report_action(command, reason, reply.rprt)
             if self._generation != generation:
                 return
         elif command.poll:
             self._error_active = {
                 key for key in self._error_active if key[:2] != ("rprt", command.header)
             }
+            last = self._last_error
+            if last is not None and last[1] is not None and last[1][:2] == ("rprt", command.header):
+                self._last_error = None  # the poll works again
         self._handle_response(command, reply)
         if self._generation != generation:
             return
@@ -652,11 +742,11 @@ class HamlibClient(QObject):
         if socket is None:
             return
         if self._phase == _CONNECTING:
-            text = socket.errorString()
-            message = tr(_MSG_CONNECT_FAILED).format(
-                daemon=self._daemon, address=self.address(), error=text
-            )
-            self._link_lost(("link", "connect", text), message)
+            if error == SOCKET_ERROR_TIMEOUT:  # Qt's own connect timeout (30 s), after ours
+                self._link_lost(("link", "connect-timeout"), self._connect_timeout_text())
+            else:
+                text = socket.errorString()
+                self._link_lost(("link", "connect", text), self._connect_error_text(error, text))
         elif error == SOCKET_ERROR_REMOTE_CLOSED:
             self._link_lost(("link", "closed"), self._closed_text())
         else:
@@ -669,16 +759,32 @@ class HamlibClient(QObject):
         if self._socket is not None:
             self._link_lost(("link", "closed"), self._closed_text())
 
+    def _arm_watchdog(self, milliseconds: int, *, settled: bool = False) -> None:
+        self._settled = settled
+        self._watchdog_due = time.monotonic() + milliseconds / 1000
+        self._watchdog.start(milliseconds)
+
+    def _settle(self) -> bool:
+        """Give the event loop one more short pass before a timeout is reported.
+
+        After the GUI thread was blocked, Qt may run the overdue watchdog before it
+        delivers the socket notifications that arrived meanwhile: the reply, or the
+        connection. ``True`` when the watchdog was armed again for that pass; it is armed
+        again too when it fired late once more (the thread was blocked again).
+        """
+        late = time.monotonic() - self._watchdog_due > _LATE_S
+        if self._settled and not late:
+            return False
+        self._arm_watchdog(min(_SETTLE_MS, self._timeout_ms), settled=True)
+        return True
+
     @_guarded
     def _on_watchdog(self) -> None:
         if self._socket is None:
             return
-        seconds = _seconds_text(self._timeout_ms)
         if self._phase == _CONNECTING:
-            message = tr(_MSG_CONNECT_TIMEOUT).format(
-                daemon=self._daemon, address=self.address(), seconds=seconds
-            )
-            self._link_lost(("link", "connect-timeout"), message)
+            if not self._settle():
+                self._link_lost(("link", "connect-timeout"), self._connect_timeout_text())
             return
         if self._in_flight is None:
             return
@@ -687,8 +793,13 @@ class HamlibClient(QObject):
         self._drain()
         if self._generation != generation or self._sent != sent or self._in_flight is None:
             return
-        message = tr(_MSG_NO_REPLY).format(
-            daemon=self._daemon, address=self.address(), seconds=seconds
+        if self._settle():
+            return
+        message = _Text(
+            _MSG_NO_REPLY,
+            daemon=self._daemon,
+            address=self.address(),
+            seconds=_seconds_text(self._timeout_ms),
         )
         self._link_lost(("link", "no-reply"), message)
 
@@ -711,23 +822,43 @@ class HamlibClient(QObject):
 
     # ------------------------------------------------------------------ reporting
 
-    def _closed_text(self) -> str:
-        return tr(_MSG_CLOSED).format(daemon=self._daemon, address=self.address())
+    def _closed_text(self) -> _Text:
+        return _Text(_MSG_CLOSED, daemon=self._daemon, address=self.address())
 
-    def _link_error_text(self, socket: QTcpSocket) -> str:
-        return tr(_MSG_LINK_ERROR).format(
-            daemon=self._daemon, address=self.address(), error=socket.errorString()
+    def _link_error_text(self, socket: QTcpSocket) -> _Text:
+        return _Text(
+            _MSG_LINK_ERROR,
+            daemon=self._daemon,
+            address=self.address(),
+            error=socket.errorString(),
         )
 
-    def _report_action(self, command: _Command, reason: str, code: int | None = None) -> None:
+    def _connect_timeout_text(self) -> _Text:
+        return _Text(
+            _MSG_CONNECT_TIMEOUT,
+            daemon=self._daemon,
+            address=self.address(),
+            seconds=_seconds_text(self._timeout_ms),
+        )
+
+    def _connect_error_text(self, error: Any, text: str) -> _Text:
+        """What went wrong while connecting, with what to do for the common cases."""
+        if error == SOCKET_ERROR_CONNECTION_REFUSED:  # nothing listens: the daemon is not running
+            return _Text(_MSG_CONNECT_REFUSED, daemon=self._daemon, address=self.address())
+        if error == SOCKET_ERROR_HOST_NOT_FOUND:
+            return _Text(_MSG_HOST_NOT_FOUND, daemon=self._daemon, address=self.address())
+        return _Text(_MSG_CONNECT_FAILED, daemon=self._daemon, address=self.address(), error=text)
+
+    def _report_action(
+        self, command: _Command, reason: _Text | Callable[[], str], code: int | None = None
+    ) -> None:
         """Report a failed command; polls are rate limited, set commands never are."""
         template = _ACTION_FAILED.get(command.header, _MSG_COMMAND_FAILED)
-        message = tr(template).format(error=reason, command=command.header)
         key = ("rprt", command.header, code) if command.poll else None
-        self._report(message, key)
+        self._report(_Text(template, error=reason, command=command.header), key)
 
-    def _report(self, message: str, key: tuple[Any, ...] | None = None) -> None:
-        """Log ``message`` and emit ``errorOccurred``.
+    def _report(self, text: _Text, key: tuple[Any, ...] | None = None) -> None:
+        """Log ``text`` (translated now) and emit ``errorOccurred``.
 
         With a ``key`` the report is rate limited: once reported, nothing more while
         the same problem is still going on (it ends when the command succeeds or,
@@ -746,6 +877,8 @@ class HamlibClient(QObject):
                 self._error_last.clear()
             self._error_last[key] = now
             self._error_active.add(key)
+        message = text.render()
+        self._last_error = (text, key)
         _log(message, MSG_WARNING)
         self.errorOccurred.emit(message)
 

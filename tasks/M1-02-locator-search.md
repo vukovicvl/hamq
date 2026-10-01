@@ -100,3 +100,9 @@ ruff check / ruff format --check                     -> clean
   self.toolbar.addWidget(search)        # deleted with the toolbar
   self.add_cleanup(search.cleanup)
   ```
+- **Release pass (2026-10-01)** (GUI fixer): the toolbar field has a fixed width: as wide
+  as its placeholder or a 10-character locator, plus the locator icon and the clear
+  button, so it no longer stretches over the toolbar. Still open (gui): the "{text} is
+  not a valid Maidenhead locator" warning is pushed to the message bar unescaped, so
+  markup typed into the field is rendered (a typed `<` disappears); escape it with
+  `html.escape(text, quote=False)`.

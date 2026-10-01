@@ -14,12 +14,14 @@ from qgis.core import (
     QgsExpressionContext,
     QgsExpressionContextScope,
     QgsFeature,
+    QgsLayerTreeModel,
     QgsLineSymbol,
     QgsMarkerSymbol,
     QgsRenderContext,
     QgsSingleSymbolRenderer,
     QgsVectorLayer,
 )
+from qgis.PyQt.QtCore import QCoreApplication, Qt
 
 from hamq.core.bands import BAND_ORDER
 from hamq.core.i18n import LANG_EN, LANG_SR_CYRL, LANG_SR_LATN, set_language
@@ -443,6 +445,73 @@ def test_retranslate_style_ignores_other_renderers():
     layer = memory_layer("qso")
     styles.retranslate_style(layer)  # the default single symbol renderer
     assert not isinstance(layer.renderer(), QgsCategorizedSymbolRenderer)
+
+
+class Legend:
+    """The legend of a layer as the Layers panel shows it: one ``QgsLayerTreeModel`` that
+    lives through the test (a new model would read the renderer afresh)."""
+
+    def __init__(self, project, layer: QgsVectorLayer) -> None:
+        self.model = QgsLayerTreeModel(project.layerTreeRoot())
+        self.node = project.layerTreeRoot().findLayer(layer.id())
+        assert self.node is not None
+        self.rebuilds = 0
+        layer.legendChanged.connect(self._count)
+
+    def _count(self) -> None:
+        self.rebuilds += 1
+
+    def last_label(self) -> str:
+        QCoreApplication.processEvents()
+        return self.model.layerLegendNodes(self.node)[-1].data(Qt.ItemDataRole.DisplayRole)
+
+
+def test_other_bands_legend_entry_follows_the_language(clean_project):
+    """The label is changed in place, so the legend must be told (once per change)."""
+    layer = memory_layer("qso")
+    styles.apply_default_style(layer, "qso")
+    clean_project.addMapLayer(layer)
+    legend = Legend(clean_project, layer)
+    assert legend.last_label() == "Other bands"
+    set_language(LANG_SR_LATN)
+    styles.retranslate_style(layer)
+    assert legend.last_label() == "Ostali opsezi"
+    assert legend.rebuilds == 1
+    styles.retranslate_style(layer)  # nothing changed: the legend is not rebuilt again
+    assert legend.rebuilds == 1
+    set_language(LANG_SR_CYRL)
+    styles.retranslate_style(layer)
+    assert legend.last_label() == "Остали опсези"
+    set_language(LANG_EN)
+    styles.retranslate_style(layer)
+    assert legend.last_label() == "Other bands"
+    assert legend.rebuilds == 3
+
+
+def test_legend_entry_of_a_label_the_user_changed_stays(clean_project):
+    layer = memory_layer("qso_path")
+    styles.apply_default_style(layer, "qso_path")
+    clean_project.addMapLayer(layer)
+    layer.renderer().updateCategoryLabel(len(layer.renderer().categories()) - 1, "Rest")
+    layer.legendChanged.emit()
+    legend = Legend(clean_project, layer)
+    set_language(LANG_SR_LATN)
+    styles.retranslate_style(layer)
+    assert legend.last_label() == "Rest"
+    assert legend.rebuilds == 0
+
+
+def test_apply_default_style_to_a_layer_in_the_legend(clean_project):
+    """The .qml file holds the English label; translating it after loading must reach a
+    legend that already shows the layer."""
+    layer = memory_layer("qso")
+    clean_project.addMapLayer(layer)
+    legend = Legend(clean_project, layer)
+    set_language(LANG_SR_LATN)
+    styles.apply_default_style(layer, "qso")
+    assert legend.last_label() == "Ostali opsezi"
+    styles.apply_default_style(layer, "qso")
+    assert legend.last_label() == "Ostali opsezi"
 
 
 @pytest.mark.parametrize(

@@ -20,8 +20,9 @@ hamq/
   metadata.txt
   core/                  pure Python 3.9+, no qgis / PyQt imports
     bands.py             band table, band_from_freq, band_sort_key   (done)
-    modes.py             display_mode(mode, submode)                  (done)
+    modes.py             display_mode(mode, submode), dedup_mode(mode, submode)   (done)
     maidenhead.py adif.py geo.py cty.py wsjtx.py qso.py stats.py i18n.py hamlib.py
+    rigmode.py           Hamlib radio mode <-> ADIF MODE/SUBMODE, default RST (M7)
   i18n/
     sr_Latn/*.json       translation catalogs: English source -> Serbian Latin
   qgis_io/
@@ -37,6 +38,7 @@ hamq/
   gui/
     dock.py settings_dialog.py locator_search.py azimuthal.py language.py
     rotator_tool.py qso_dialog.py
+    message_box.py       QMessageBox question()/about() with buttons named through tr()
   net/
     cty_download.py wsjtx_listener.py hamlib_client.py
   resources/
@@ -48,6 +50,8 @@ tests/
 scripts/
   package.py             builds dist/hamq-<version>.zip
   test_qgis.sh           runs tests/qgis on local QGIS and Docker images
+  make_styles.py         regenerates resources/styles/*.qml (run on QGIS 3.34)
+  make_wsjtx_fixtures.py regenerates the WSJT-X golden packets in tests/fixtures/wsjtx
 ```
 
 ## General rules
@@ -128,9 +132,54 @@ LABELS = {"total": tr_noop("Total QSOs")}       # marked, translated later with 
 | language | jezik |
 | azimuthal map | azimutalna karta |
 | about | o programu |
+| submode | podvrsta rada |
+| logger (a logging program) | program za vođenje dnevnika veza |
+| amateur radio operator / ham radio (the hobby, search tags) | radio-amater / radio-amaterizam |
+| record / field / header / tag (ADIF) | zapis / polje / zaglavlje / oznaka |
+| position (of the other station) / position (of the rotator) | pozicija / položaj |
+| RST sent / RST received | poslati RST / primljeni RST |
+| receiving WSJT-X messages (status and log lines) | prijem WSJT-X poruka |
+| daemon (rigctld, rotctld) | servis |
+| azimuth range (of the rotator) | raspon azimuta |
+| turn (the antenna) / point on map | okreni / usmeri klikom na mapu |
+| set (a value on the radio, button) | podesi |
+| set your ... (in the settings) | unesite ... |
+| poll interval | interval očitavanja |
+| extent / level (Processing) | obuhvat / nivo |
+| layer / project / edit mode | sloj / projekat / režim uređivanja |
+| file / folder / read-only | fajl / fascikla / samo za čitanje |
+| limit (largest allowed value) | granica |
+| share (of the total) | udeo |
+| OK / Cancel / Yes / No | U redu / Otkaži / Da / Ne |
+| unexpected error | neočekivana greška |
+| Advanced Parameters / Log Messages (QGIS) | napredni parametri / dnevnik poruka (QGIS) |
 
-Keep technical names untranslated: QSO, ADIF, DXCC, WSJT-X, JTDX, UDP, CQ, ITU,
-FT8, FT4, GeoPackage, cty.dat, Hamlib, QGIS, UTC, QTH, EPSG:4326.
+Keep technical names untranslated: QSO, ADIF, DXCC, WSJT-X, JTDX, UDP, TCP, CQ, ITU,
+FT8, FT4, GeoPackage, cty.dat, Hamlib, rigctld, rotctld, QGIS, Processing (QGIS has no
+Serbian translation, so its menus say "Processing"), UTC, QTH, EPSG:4326, multicast,
+JTAlert, GridTracker, MB, HTTP.
+
+Serbian style rules:
+
+- Sentence case for titles, buttons and menu entries ("Upis veze", "Okretanje
+  rotatora", "Usmeri antenu klikom na mapu").
+- Menu actions and buttons that give a command use the imperative, second person
+  singular, as in the glossary ("Uvezi ADIF...", "Preuzmi", "Okreni"); instructions to
+  the user in messages use the plural ("Unesite", "Izaberite", "Proverite").
+- Case endings of technical names go after a hyphen (`WSJT-X-a`, `QTH-u`, `QGIS-a`,
+  `rigctld-om`), never glued to the name (`Hamliba`): the Cyrillic transliteration then
+  keeps the name in Latin and transliterates only the ending.
+- Serbian quotation marks („Moj QTH lokator“) around names of parameters and fields;
+  a decimal comma in examples (`14,074`); menu paths of other programs
+  (`File > Settings > Reporting > UDP Server`) stay in English and are passed as
+  placeholders.
+- One English text has one translation in every catalog (the catalog test checks equal
+  keys; the glossary keeps different keys consistent).
+- Cyrillic is derived at run time with `core.i18n.latin_to_cyrillic`. A name written
+  like an ordinary word (a program, a person) must be in `core.i18n.PROTECTED_WORDS`,
+  or it is transliterated. Check new texts with
+  `HAMQ_STRICT_I18N=1 python3 -m pytest tests/core/test_i18n_catalog.py` and by reading
+  their `latin_to_cyrillic` output.
 
 ## Core API (pure Python)
 
@@ -141,7 +190,20 @@ FT8, FT4, GeoPackage, cty.dat, Hamlib, QGIS, UTC, QTH, EPSG:4326.
 
 ### core/modes.py (done)
 
-`display_mode(mode, submode) -> str`: SUBMODE if present else MODE, uppercased, `""` if neither.
+`__all__ = ["dedup_mode", "display_mode"]`.
+
+`display_mode(mode, submode) -> str`: SUBMODE if present else MODE, uppercased, `""` if
+neither. What the user sees (statistics, panel, `qso_path.mode`).
+
+`dedup_mode(mode, submode) -> str`: the mode in the duplicate key, one value however a
+logger wrote the same contact. For an ADIF 3.1.7 mode whose submodes are only variants of
+it (sideband, speed, tones: SSB, PSK, JT65, JT9, JT4, CW, RTTY, OLIVIA, HELL, DOMINO,
+THOR, QRA64, ...), the family of MODE (else of SUBMODE when MODE is missing):
+`SSB`, `SSB`+`USB`/`LSB` and the older `MODE=USB` give `"SSB"`; `PSK`+`PSK31` and
+`MODE=PSK31` give `"PSK"`; `JT65`+`JT65B` and `MODE=JT65B` give `"JT65"`. MFSK and
+DIGITALVOICE are umbrella modes whose submodes are modes of their own (FT4, JS8, Q65,
+FST4, C4FM, DMR): they and every other mode give `display_mode` (`MFSK`+`FT4` and
+`MODE=FT4` give `"FT4"`). Case and blanks do not matter; `""` when neither is given.
 
 ### core/maidenhead.py (M1)
 
@@ -185,7 +247,8 @@ def parse_latlon(value: str | None) -> float | None        # 'N044 48.750' -> 44
 def parse_freq(value: str | None) -> float | None          # '14.074', '14,074' -> 14.074
 def parse_qso_datetime(qso_date: str | None, time_on: str | None) -> datetime | None  # UTC aware
 def dedup_key(call: str, qso_date: str, time_on: str, band: str, mode: str) -> str
-    # f"{CALL}|{QSO_DATE}{TIME_ON[:4]}|{band}|{MODE}"  (minute precision)
+    # f"{CALL}|{QSO_DATE}{TIME_ON[:4]}|{band}|{mode}"  (minute precision);
+    # core/qso.py passes modes.dedup_mode(MODE, SUBMODE) as mode
 def format_record(fields: Mapping[str, str]) -> str        # '<CALL:5>YU1AB ... <EOR>\n'
 def format_document(records, header: Mapping[str, str] | None = None) -> str
 ```
@@ -315,7 +378,7 @@ class Qso:
     distance_km: Optional[float]
     bearing_deg: Optional[float]
     loc_source: Optional[str]            # 'latlon' | 'grid' | 'cty' | None
-    source: str                          # 'adif:<file name>' | 'wsjtx'
+    source: str                          # 'adif:<file name>' | 'wsjtx' | 'manual'
     dedup_key: str
     adif_extra: str                      # JSON object text, '{}' when nothing extra
     lat: Optional[float]                 # other station position (None = no geometry)
@@ -338,13 +401,22 @@ Rules for `record_to_qso`:
 
 - `CALL` required (skip + warning); `QSO_DATE`+`TIME_ON` must parse (skip + warning).
 - band: `BAND` normalized, else derived from `FREQ`.
-- mode/submode uppercased. Dedup uses `display_mode` (FT4 logged as `MODE=FT4`
-  or `MODE=MFSK SUBMODE=FT4` must dedup to the same key).
+- mode/submode uppercased and stored as logged. Dedup uses `modes.dedup_mode`: FT4
+  logged as `MODE=FT4` or `MODE=MFSK SUBMODE=FT4` dedups to the same key, and so do
+  SSB as `MODE=SSB`, `MODE=SSB SUBMODE=USB`/`LSB` or `MODE=USB`, PSK31 as `MODE=PSK31`
+  or `MODE=PSK SUBMODE=PSK31`, JT65B as `JT65`, and the other ADIF submode variants.
 - gridsquare normalized with `maidenhead.normalize`; a 10-char locator is cut to
   8 with a warning; an invalid one is kept as-is, not used for position, warning.
 - Position of the other station: `LAT`/`LON` > `GRIDSQUARE` center > cty entity > none.
+  Exception: a 2-character `GRIDSQUARE` (a 20 x 10 degree field) yields to the cty.dat
+  position when that lies inside the field; otherwise the field centre is used, with a
+  warning.
 - Path origin: record `MY_LAT`/`MY_LON` > record `MY_GRIDSQUARE` > `station.grid` > none.
-  `my_gridsquare` = record value or `station.grid`.
+  `my_gridsquare` = record value or `station.grid`. Without `MY_LAT`/`MY_LON`, a
+  `MY_GRIDSQUARE` that is a strict prefix of a valid `station.grid` (`KN04` for `KN04ft`,
+  as WSJT-X writes "My Grid") names the same place less precisely: `station.grid` is used
+  for the origin and stored as `my_gridsquare`. A finer locator or another cell
+  (portable operation) is used as logged.
 - `dxcc`, `country`, `cont`, `cq_zone`, `itu_zone`: record values (`DXCC`,
   `COUNTRY`, `CONT`, `CQZ`, `ITUZ`) win; missing ones are filled from cty
   (`dxcc` from `CtyMatch.dxcc`, `country` from `CtyMatch.dxcc_name`).
@@ -675,10 +747,12 @@ Additive changes accepted after the QGIS layer was built (2026-10-01):
   providers from a worker thread: on QGIS 4.2 that deadlocked or crashed in stress tests
   while the main thread saved an edit session of the same file. Worker-thread callers emit
   `events().dataChanged(path)` from the main thread (e.g. `postProcessAlgorithm`).
-- `qgis_io/gpkg.py`: `GpkgError`, `SCHEMA_VERSION = 1`, `META_TABLE = "hamq_meta"`,
+- `qgis_io/gpkg.py`: `GpkgError`, `SCHEMA_VERSION` (1 at the time, 2 since the release
+  pass, see below), `META_TABLE = "hamq_meta"`,
   `PATH_STEP_KM`; `InsertResult` also has `paths` and `canceled`;
   `existing_dedup_keys(path, keys=None)`; `recalculate(..., *, force_station=False)` (origin:
-  MY_LAT/MY_LON from `adif_extra`, else a valid stored `my_gridsquare`, else `station.grid`).
+  MY_LAT/MY_LON from `adif_extra`, else a valid stored `my_gridsquare`, else `station.grid`;
+  refined in the release pass, see below).
 - `qgis_io/layers.py`: `GROUP_NAME`, `LAYER_NAMES`, `FIELD_ALIASES`, `matching_layers(path)`,
   `retranslate_layers()`, `connect_events() -> disconnect` (register with `plugin.add_cleanup`).
 - Grid layers: text field `locator` + `styles.apply_default_style(layer, "grid")`.
@@ -697,3 +771,117 @@ Additive changes accepted after the QGIS layer was built (2026-10-01):
 - `compat`: `TASK_CANCEL_WITHOUT_PROMPT`, `TASK_HIDDEN`, `TASK_SILENT`.
 - `qso.source` also takes `"manual"` (manual QSO dialog).
 
+
+Additive changes accepted in the release pass before v0.1.0 (2026-10-01). The names
+below were already used across modules, or were added by the release fixes:
+
+- **core**
+  - `core/modes.py`: `dedup_mode(mode, submode)` and `__all__` (section "core/modes.py");
+    `core/qso.py` builds the duplicate key with it. `core/rigmode.py` (M7):
+    `normalize_rig_mode`, `is_data_mode`, `adif_mode(rig_mode) -> (MODE, SUBMODE) | None`,
+    `split_mode(text)`, `default_rst(mode, submode=None)`, `ADIF_MODES`, `DATA_RIG_MODES`,
+    `MODE_CHOICES`, `SUBMODES`, `SUBMODE_PARENTS`.
+  - `core/qso.py` rules (section "core/qso.py"): a 2-character `GRIDSQUARE` yields to the
+    cty.dat position inside that field; a `MY_GRIDSQUARE` that is a strict prefix of
+    `station.grid` is refined to it (origin and `my_gridsquare`).
+  - `core/i18n.py`: `language_name(language)` (native names; the translated
+    "Auto (QGIS language)" for `auto`), `load_problems()` (catalog problems, translated
+    when read), `PROTECTED_WORDS` (words that stay Latin in Cyrillic; extend it with a
+    test in `tests/core/test_i18n.py`).
+- **qgis_io**
+  - `gpkg.SCHEMA_VERSION = 2`. Schema 2 adds the trigger `qso_delete_paths`
+    (`AFTER DELETE ON qso`: deletes the paths of a deleted QSO, whichever program deletes
+    it). `ensure_gpkg` upgrades a schema 1 file; the migration deletes paths whose QSO no
+    longer exists (a line with `qso_fid` NULL stays).
+  - `gpkg.STATION_GRID_KEY = "APP_HAMQ_STATION_GRID"`: `adif_extra` key with the value
+    `"Y"`, set by *Import ADIF* when my locator is set and the record has no
+    `MY_GRIDSQUARE` (its `my_gridsquare` comes from the settings, not from the log).
+    `recalculate` without `force_station` moves such QSOs to a valid `station.grid` and
+    stores it as `my_gridsquare`; it also stores the refined `my_gridsquare` of the core
+    rule above, so the column always names the locator the origin comes from.
+  - `insert_qsos` / `recalculate` raise `GpkgError` with a translated message that says
+    what to check for a read-only file or a folder without write permission: checked
+    before anything is written, and mapped from `SQLITE_READONLY` / `SQLITE_CANTOPEN` at
+    the first refused write. `ensure_gpkg` uses a read-only file that only lacks indexes,
+    the trigger or the newest schema version as it is (it can still be shown).
+  - `layers.connect_events()` also emits `events().dataChanged(path)` once after a saved
+    edit session of a `qso` / `qso_path` layer of the project.
+  - `styles.apply_default_style` / `retranslate_style` emit `layer.legendChanged` when a
+    category label changes, so the Layers panel follows a language switch.
+  - `compat`: `TEXT_PLAIN`; `LOG_PANEL_SHOWS_HTML` (True on QGIS 3.34 to 3.40.6 and
+    3.42.0 / 3.42.1, whose Log Messages panel renders HTML: text from files or the network
+    is escaped with `html.escape(text, quote=False)` before it is logged there);
+    `SOCKET_ERROR_CONNECTION_REFUSED`, `SOCKET_ERROR_HOST_NOT_FOUND`,
+    `SOCKET_ERROR_TIMEOUT`, `SOCKET_ERROR_ADDRESS_NOT_AVAILABLE`, `NET_CONNECTION_REFUSED`,
+    `NET_HOST_NOT_FOUND`, `NET_TIMEOUT`, `NET_TEMPORARY_NETWORK_FAILURE`,
+    `NET_NETWORK_SESSION_FAILED`, `NET_UNKNOWN_NETWORK_ERROR`.
+- **processing**: `import_adif` has the advanced parameter `MAX_SIZE_MB` (int, default
+  `DEFAULT_MAX_SIZE_MB = 200`); a larger file, or one with more than
+  `RECORDS_PER_MB = 10_000` records per MB of the limit, is refused before it is read, and
+  so is anything that is not a regular file. A GeoPackage HamQ may not write fails the
+  algorithm with the `GpkgError` text.
+- **net**
+  - `WsjtxListener.start(address, port)` binds the configured address, so only datagrams
+    sent to it arrive (`127.0.0.1` by default: only programs on this computer can log
+    QSOs). `""` / `0.0.0.0`, a multicast group and a broadcast address bind `AnyIPv4`. An
+    address that is not one of this computer gives a translated error. The socket uses
+    no proxy (`QNetworkProxy.NoProxy`). Also `address()` / `port()` (normalized values
+    while running) and the new `current_error()` (the last start problem, translated
+    again in the current language; `""` when none).
+  - `HamlibClient`: the new `current_error()` (the problem reported last, translated
+    again; `""` when it is over), `address()`, `is_running()`, `poll_interval()` /
+    `set_poll_interval(poll_ms)`. Commands are flushed to the socket at once, and a
+    timeout is reported only after one more short (100 ms) pass of the event loop, so a
+    GUI thread that was blocked does not cause a false disconnect. Connection errors say
+    what to do (start the daemon, check address and port) instead of Qt's English text.
+    `RigClient.state()`, `RotatorClient.position()`.
+  - `CtyManager`: `preload()` (parse the cache in a thread at start), `is_downloading()`,
+    `cancel()`, `cleanup()`, `cache_path()`; `load_cached_cty(path=None)`,
+    `clear_cty_cache()`, `csv_path_for(dat_path)`. An unreachable server is reported in
+    plain words; Qt's error text goes to the log.
+- **gui**
+  - `message_box.py`: `MessageBox.question(parent, title, text, buttons, default_button,
+    *, button_texts=None) -> StandardButton` and `MessageBox.about(parent, title, text)`
+    name their buttons through `tr()`; `name_buttons(box, texts=None)`, `BUTTON_TEXTS`.
+    Import it as `QMessageBox` where a HamQ box is shown.
+  - `dock.py`: `HamQDock` signals `refreshRequested`, `importRequested`,
+    `settingsRequested`, `listenToggled(bool)`, `rigSetRequested(qint64, str)` (Hz, mode),
+    `rotatorTurnRequested(float)`, `rotatorStopRequested`, `pointOnMapToggled(bool)`,
+    `logQsoRequested`, and the `set_*` methods the controller calls; `DecimalSpinBox`,
+    `hamq_locale()` (the `QLocale` of the HamQ language), `decimal_separator()`,
+    `format_number`, `format_mhz`, `format_distance`, `format_azimuth`, `format_bearing`,
+    `format_utc`. Every label shows plain text; tooltips with outside text are escaped.
+  - `azimuthal.py`: `STATE_PROPERTY = "hamq/azimuthal"` (JSON state of the map saved
+    with the helper layer: locator, the CRS and view to restore) and
+    `SKIP_MEMORY_CHECK`; a project saved with the map on opens with it on again
+    (`readProject`).
+  - `rotator_tool.long_path_parts(...)` (pure math kept in the GUI module, M7-03).
+- **plugin and controller**: `classFactory` imports every subpackage, so
+  `qgis.utils.unloadPlugin` removes all HamQ modules; texts pushed to the message bar
+  are HTML-escaped (`QgsMessageBarItem.text()` returns the escaped text, which QGIS shows
+  literally); controller and plugin log lines are escaped where
+  `compat.LOG_PANEL_SHOWS_HTML`.
+
+## Skills and this contract
+
+The skills in `.github/skills/` are background knowledge written before the code. Where
+they differ from this file, **this contract and the code win**; do not "fix" the
+implementation back to a skill. Known differences:
+
+- adif: field lengths count characters, with the narrow byte-length tolerance of section
+  "core/adif.py" (the skill says to take LENGTH characters and never be clever); the
+  duplicate key uses `modes.dedup_mode`, not `MODE`; `GRIDSQUARE` may have 2 to 8
+  characters (2 = a field, used only as described in "core/qso.py"); position priority
+  has the 2-character exception.
+- hamlib: Hamlib is part of v0.1.0 (PLAN.md M7), not post-MVP. An azimuth outside the
+  rotator range is refused (`rotator_target` returns `None` and the map tool says why),
+  never clamped to the range end.
+- pyqgis-plugin: the log is written with plain SQLite (the "GeoPackage write rule"
+  above), not `provider.addFeatures`; translations use `tr()` from `hamq.core.i18n`,
+  never `QCoreApplication.translate` (section "Translation (i18n) rules").
+- wsjtx-udp: the listener binds the configured address (127.0.0.1 by default) and
+  `AnyIPv4` only for `0.0.0.0`, multicast and broadcast, with no proxy; the skill's
+  "bind `AnyIPv4`" would accept QSOs from every host on the network. The decoder reads
+  every Status field, not only the first three.
+- geodesy, maidenhead, dxcc-cty: followed; HamQ only extends them (dxcc-cty: the
+  `/LH`, `/FF`, `/YL` and similar suffixes and the KG4 rule).

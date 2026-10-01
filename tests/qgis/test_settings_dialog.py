@@ -300,6 +300,44 @@ def test_live_locator_feedback(make_dialog):
     assert dialog.grid_status.text().startswith("Not set")
 
 
+@pytest.mark.parametrize(
+    ("code", "center", "maximum"),
+    [
+        (LANG_EN, "44.8125°, 20.4583°", "360.0°"),
+        (LANG_SR_LATN, "44,8125°, 20,4583°", "360,0°"),
+        (LANG_SR_CYRL, "44,8125°, 20,4583°", "360,0°"),
+    ],
+)
+def test_numbers_use_the_hamq_decimal_separator(make_dialog, manager, code, center, maximum):
+    """Like the panel: a decimal comma in Serbian, a point in English, whatever the system."""
+    dialog = make_dialog()
+    dialog.show()
+    manager.set_setting(code)
+    dialog.grid_edit.setText("KN04ft")
+    assert dialog.grid_status.text().endswith(center)
+    dialog.rot_max_spin.setValue(360.0)
+    assert dialog.rot_max_spin.text() == maximum
+    dialog.reject()
+
+
+@pytest.mark.parametrize("system", ["en_US", "sr_Latn_RS"])
+@pytest.mark.parametrize("code", [LANG_EN, LANG_SR_LATN])
+@pytest.mark.parametrize(
+    ("typed", "value"),
+    [("36.5", 36.5), ("36,5", 36.5), ("36,5°", 36.5), ("-180", -180.0), ("-90.5°", -90.5)],
+)
+def test_azimuths_accept_point_and_comma(make_dialog, manager, system, code, typed, value):
+    """Neither "." nor "," is ever a thousands separator: 36.5 never becomes 365."""
+    dialog = make_dialog()
+    manager.set_setting(code)
+    spin = dialog.rot_min_spin
+    spin.setLocale(QLocale(system))  # what Qt would otherwise use for parsing
+    spin.setValue(10.0)
+    spin.lineEdit().setText(typed)
+    spin.interpretText()
+    assert spin.value() == pytest.approx(value)
+
+
 def test_callsign_is_uppercased_while_typing(make_dialog):
     qtest = pytest.importorskip("qgis.PyQt.QtTest")
     dialog = make_dialog()

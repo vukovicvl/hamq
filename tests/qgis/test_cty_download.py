@@ -22,7 +22,7 @@ from hamq.core import i18n
 from hamq.core.cty import CtyDatabase
 from hamq.net import cty_download
 from hamq.net.cty_download import CtyManager, clear_cty_cache, csv_path_for, load_cached_cty
-from hamq.qgis_io.compat import MSG_WARNING
+from hamq.qgis_io.compat import MSG_INFO, MSG_WARNING
 from hamq.settings import HamQSettings, cty_cache_path
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "cty"
@@ -308,7 +308,7 @@ def test_timeout_keeps_the_old_cache(make_manager, server, english):
     assert_old_cache_kept(manager)
 
 
-def test_unreachable_server_keeps_the_old_cache(make_manager, english):
+def test_unreachable_server_keeps_the_old_cache(make_manager, log_messages, english):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         closed_port = probe.getsockname()[1]
@@ -317,8 +317,51 @@ def test_unreachable_server_keeps_the_old_cache(make_manager, english):
     assert wait_until(lambda: results)
     ok, message = results[0]
     assert not ok
-    assert message.startswith("cty.dat download failed: cty.dat: ")
+    assert message == (
+        "cty.dat download failed: the server 127.0.0.1 cannot be reached; check the internet "
+        "connection or try again later. The previously downloaded files are still used."
+    )
+    # Qt's own (English) error text goes to the log only
+    details = [
+        text
+        for text, tag, level in log_messages
+        if tag == "HamQ" and level == MSG_INFO and text.startswith("cty.dat: ")
+    ]
+    assert len(details) == 1 and "refused" in details[0].lower(), details
     assert_old_cache_kept(manager)
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        (
+            i18n.LANG_EN,
+            "cty.dat download failed: the server nonexistent-host.invalid cannot be reached; "
+            "check the internet connection or try again later.",
+        ),
+        (
+            i18n.LANG_SR_LATN,
+            "Preuzimanje cty.dat nije uspelo: server nonexistent-host.invalid nije dostupan; "
+            "proverite pristup internetu ili pokušajte kasnije.",
+        ),
+        (
+            i18n.LANG_SR_CYRL,
+            "Преузимање cty.dat није успело: сервер nonexistent-host.invalid није доступан; "
+            "проверите приступ интернету или покушајте касније.",
+        ),
+    ],
+)
+def test_no_internet_says_what_to_do(make_manager, language, expected):
+    # The first download usually happens on first use: offline, the host name is not found.
+    manager, results = make_manager(dat="http://nonexistent-host.invalid/cty.dat", old_cache=False)
+    i18n.set_language(language)
+    try:
+        manager.download()
+        assert wait_until(lambda: results)
+    finally:
+        i18n.set_language(i18n.LANG_EN)
+    assert results == [(False, expected)]
+    assert not manager.is_available()
 
 
 def test_file_larger_than_the_limit_is_rejected(make_manager, server, english):

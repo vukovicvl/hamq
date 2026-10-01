@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import html
 import os
 import traceback
 from collections.abc import Callable, Mapping, Sequence
@@ -129,8 +130,19 @@ _HINTS = {
 _RUNNING_TASKS: set[_StatsTask] = set()
 
 
+def _plain(text: str) -> str:
+    """``text`` for a QGIS widget that renders HTML (a message bar item): shown as it is.
+
+    Calls, client ids and error texts come from log files and the network; markup in
+    them must never become a link that opens the browser.
+    """
+    return html.escape(text, quote=False)
+
+
 def _log(message: str, level: Any) -> None:
-    QgsMessageLog.logMessage(message, LOG_TAG, level)
+    # escaped where the Log Messages panel renders HTML (QGIS 3.34 to 3.40.6, see compat)
+    text = _plain(message) if compat.LOG_PANEL_SHOWS_HTML else message
+    QgsMessageLog.logMessage(text, LOG_TAG, level)
 
 
 def _log_error(where: str, exc: BaseException) -> None:
@@ -222,7 +234,7 @@ class _Hint:
         self._bar = bar
         self._text = text  # untranslated sources, marked with tr_noop()
         self._button_text = button_text
-        self.item = bar.createMessage(MESSAGE_TITLE, tr(text))
+        self.item = bar.createMessage(MESSAGE_TITLE, _plain(tr(text)))
         self.button = QPushButton(self.item)
         self.button.setObjectName("HamQHintButton")
         self.button.setText(tr(button_text))
@@ -238,7 +250,7 @@ class _Hint:
 
     def retranslate(self) -> None:
         if _alive(self.item) and _alive(self.button):
-            self.item.setText(tr(self._text))
+            self.item.setText(_plain(tr(self._text)))
             self.button.setText(tr(self._button_text))
 
     def close(self) -> None:
@@ -703,11 +715,14 @@ class HamQController(QObject):
                     INFO_SECONDS,
                 )
             else:
+                # insert_qsos's warning names the QSO and the cause (and is logged already)
                 self._warn(
-                    tr("The QSO with {call} could not be saved: {error}").format(
-                        call=qso.call, error=result.warnings[0] if result.warnings else "?"
+                    result.warnings[0]
+                    if result.warnings
+                    else tr("The QSO with {call} could not be saved: {error}").format(
+                        call=qso.call, error="?"
                     ),
-                    log=False,  # insert_qsos's warnings are logged already
+                    log=False,
                 )
                 return
         else:
@@ -948,9 +963,10 @@ class HamQController(QObject):
             return None
 
     def _message(self, text: str, level: Any, duration: int) -> None:
+        # QGIS renders the text as HTML: it is escaped, so it is shown exactly as given
         bar = self._message_bar()
         if bar is not None:
-            bar.pushMessage(MESSAGE_TITLE, text, level, duration)
+            bar.pushMessage(MESSAGE_TITLE, _plain(text), level, duration)
 
     def _warn(self, text: str, *, log: bool = True) -> None:
         """A translated warning in the message bar (and the HamQ log)."""

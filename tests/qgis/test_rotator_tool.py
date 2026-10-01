@@ -8,13 +8,21 @@ from types import SimpleNamespace
 import pytest
 from qgis.core import QgsCoordinateReferenceSystem, QgsPointXY, QgsRectangle
 from qgis.gui import QgsMapCanvas, QgsMapMouseEvent
-from qgis.PyQt.QtCore import QEvent, QPoint, Qt
+from qgis.PyQt.QtCore import QEvent, QPoint, Qt, QTimer
+from qgis.PyQt.QtWidgets import QApplication, QMessageBox
 
 from hamq.core import geo, i18n, maidenhead
 from hamq.events import events
-from hamq.gui import rotator_tool
 from hamq.gui.rotator_tool import RotatorMapTool, long_path_parts
-from hamq.qgis_io.compat import MSG_CRITICAL, MSG_INFO, MSG_WARNING, MSGBOX_NO, MSGBOX_YES
+from hamq.qgis_io.compat import (
+    MSG_CRITICAL,
+    MSG_INFO,
+    MSG_WARNING,
+    MSGBOX_CANCEL,
+    MSGBOX_NO,
+    MSGBOX_OK,
+    MSGBOX_YES,
+)
 
 KN04FT = maidenhead.to_latlon("KN04ft")
 SYDNEY = (-33.8688, 151.2093)
@@ -528,56 +536,160 @@ def test_long_path_parts_without_a_great_circle():
 # --------------------------------------------------------------------------- defaults
 
 
-def test_default_confirmation_is_a_question_box(canvas, monkeypatch):
-    asked = []
+def answer_message_box(button, seen):
+    """Answer the next modal ``QMessageBox`` with the standard ``button``.
 
-    class FakeBox:
-        @staticmethod
-        def question(parent, title, text, buttons, default):
-            asked.append((parent, title, text, buttons, default))
-            return MSGBOX_YES
+    What the user saw is appended to ``seen``: title, text, text format, icon, parent,
+    default and escape button, and ``{standard button: text}`` of every button. Works
+    whichever way the box is made (a static ``QMessageBox.question`` too) and never
+    leaves a box open: a box without ``button`` is rejected and the problem recorded.
+    """
+    tries = []
 
-    monkeypatch.setattr(rotator_tool, "QMessageBox", FakeBox)
-    settings = SimpleNamespace(rot_confirmed=False)
-    targets = []
-    tool = RotatorMapTool(
+    def attempt():
+        box = QApplication.activeModalWidget()
+        if not isinstance(box, QMessageBox):
+            tries.append(1)
+            if len(tries) < 300:  # about 3 s
+                QTimer.singleShot(10, attempt)
+            return
+        try:
+            default = box.defaultButton()
+            escape = box.escapeButton()
+            seen.append(
+                {
+                    "title": box.windowTitle(),
+                    "text": box.text(),
+                    "format": box.textFormat(),
+                    "icon": box.icon(),
+                    "parent": box.parentWidget(),
+                    "buttons": {box.standardButton(b): b.text() for b in box.buttons()},
+                    "default": box.standardButton(default) if default is not None else None,
+                    "escape": box.standardButton(escape) if escape is not None else None,
+                }
+            )
+            box.button(button).click()
+        except Exception as exc:  # never raise into Qt; never leave the box open
+            seen.append({"error": repr(exc)})
+            box.reject()
+
+    QTimer.singleShot(0, attempt)
+
+
+def default_tool(canvas, settings, targets):
+    """A tool with the default confirmation (no ``confirm`` callback)."""
+    return RotatorMapTool(
         canvas,
         lambda: KN04FT,
         lambda: (0.0, 360.0),
         lambda *args: targets.append(args),
         settings=settings,
     )
-    try:
-        assert tool.aim_at(lonlat(SYDNEY)) == pytest.approx(91.0, abs=0.5)
-        assert len(asked) == 1
-        parent, title, text, buttons, default = asked[0]
-        assert parent is canvas.window()
-        assert title == "Turn the rotator"
-        assert text.startswith("Turn the antenna to azimuth 91°")
-        assert buttons == MSGBOX_YES | MSGBOX_NO
-        assert default == MSGBOX_NO
-        assert settings.rot_confirmed is True
-        assert len(targets) == 1
-    finally:
-        tool.cleanup()
 
 
-def test_default_confirmation_no_sends_nothing(canvas, monkeypatch):
-    class FakeBox:
-        @staticmethod
-        def question(*args):
-            return MSGBOX_NO
-
-    monkeypatch.setattr(rotator_tool, "QMessageBox", FakeBox)
+def test_default_confirmation_is_a_question_box(canvas):
+    seen, targets = [], []
     settings = SimpleNamespace(rot_confirmed=False)
-    tool = RotatorMapTool(
-        canvas, lambda: KN04FT, lambda: (0.0, 360.0), lambda *args: None, settings=settings
-    )
+    tool = default_tool(canvas, settings, targets)
     try:
-        assert tool.aim_at(lonlat(SYDNEY)) is None
-        assert settings.rot_confirmed is False
+        answer_message_box(MSGBOX_YES, seen)
+        assert tool.aim_at(lonlat(SYDNEY)) == pytest.approx(91.0, abs=0.5)
     finally:
         tool.cleanup()
+    assert len(seen) == 1, seen
+    box = seen[0]
+    assert box["parent"] is canvas.window()
+    assert box["title"] == "Turn the rotator"
+    assert box["text"].startswith("Turn the antenna to azimuth 91°")
+    assert box["format"] == Qt.TextFormat.PlainText
+    assert box["icon"] == QMessageBox.Icon.Question
+    assert box["buttons"] == {MSGBOX_YES: "Turn", MSGBOX_NO: "Cancel"}
+    assert box["default"] == MSGBOX_NO  # Enter does not turn the antenna
+    assert box["escape"] == MSGBOX_NO
+    assert settings.rot_confirmed is True
+    assert len(targets) == 1
+
+
+def test_default_confirmation_no_sends_nothing(canvas):
+    seen, targets = [], []
+    settings = SimpleNamespace(rot_confirmed=False)
+    tool = default_tool(canvas, settings, targets)
+    try:
+        answer_message_box(MSGBOX_NO, seen)
+        assert tool.aim_at(lonlat(SYDNEY)) is None
+        assert tool.beam_geometry() is None
+    finally:
+        tool.cleanup()
+    assert len(seen) == 1 and "error" not in seen[0], seen
+    assert settings.rot_confirmed is False
+    assert targets == []
+
+
+@pytest.mark.parametrize(
+    ("code", "title", "turn", "cancel"),
+    [
+        ("sr_Latn", "Okretanje rotatora", "Okreni", "Otkaži"),
+        ("sr_Cyrl", "Окретање ротатора", "Окрени", "Откажи"),
+    ],
+)
+def test_default_confirmation_buttons_follow_the_hamq_language(
+    canvas, language, code, title, turn, cancel
+):
+    """Qt has no Serbian catalog of its own: the box must not show "&Yes" / "&No"."""
+    language(code)
+    seen, targets = [], []
+    tool = default_tool(canvas, SimpleNamespace(rot_confirmed=False), targets)
+    try:
+        answer_message_box(MSGBOX_YES, seen)
+        assert tool.aim_at(lonlat(SYDNEY)) is not None
+    finally:
+        tool.cleanup()
+    assert len(seen) == 1, seen
+    assert seen[0]["title"] == title
+    assert seen[0]["buttons"] == {MSGBOX_YES: turn, MSGBOX_NO: cancel}
+    assert len(targets) == 1
+
+
+@pytest.mark.parametrize(
+    ("code", "names"),
+    [
+        ("en", {MSGBOX_YES: "Yes", MSGBOX_NO: "No", MSGBOX_CANCEL: "Cancel"}),
+        ("sr_Latn", {MSGBOX_YES: "Da", MSGBOX_NO: "Ne", MSGBOX_CANCEL: "Otkaži"}),
+        ("sr_Cyrl", {MSGBOX_YES: "Да", MSGBOX_NO: "Не", MSGBOX_CANCEL: "Откажи"}),
+    ],
+)
+def test_message_box_question_names_every_button(qgis_app, language, code, names):
+    """hamq.gui.message_box.MessageBox: the static question() of HamQ's message box."""
+    from hamq.gui.message_box import MessageBox
+
+    language(code)
+    seen = []
+    answer_message_box(MSGBOX_CANCEL, seen)
+    buttons = MSGBOX_YES | MSGBOX_NO | MSGBOX_CANCEL
+    assert MessageBox.question(None, "T", "<b>x</b>", buttons, MSGBOX_YES) == MSGBOX_CANCEL
+    assert len(seen) == 1, seen
+    assert seen[0]["buttons"] == names
+    assert seen[0]["default"] == MSGBOX_YES
+    assert seen[0]["escape"] == MSGBOX_CANCEL  # Cancel before No when the box has both
+    assert seen[0]["format"] == Qt.TextFormat.PlainText
+    assert seen[0]["text"] == "<b>x</b>"
+
+
+@pytest.mark.parametrize(
+    ("code", "ok"), [("en", "OK"), ("sr_Latn", "U redu"), ("sr_Cyrl", "У реду")]
+)
+def test_message_box_about_names_ok(qgis_app, language, code, ok):
+    """MessageBox.about(): like QMessageBox.about() (rich text, one button), OK translated."""
+    from hamq.gui.message_box import MessageBox
+
+    language(code)
+    seen = []
+    answer_message_box(MSGBOX_OK, seen)
+    assert MessageBox.about(None, "About HamQ", "<p><b>HamQ</b></p>") is None
+    assert len(seen) == 1, seen
+    assert seen[0]["title"] == "About HamQ"
+    assert seen[0]["buttons"] == {MSGBOX_OK: ok}
+    assert seen[0]["format"] == Qt.TextFormat.AutoText  # the About text is HTML
 
 
 def test_default_notify_uses_the_message_bar(canvas, monkeypatch, log_messages):

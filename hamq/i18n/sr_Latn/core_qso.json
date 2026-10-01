@@ -11,6 +11,7 @@
   "{record}: frequency {freq} MHz is outside the amateur bands, band unknown": "{record}: frekvencija {freq} MHz je van radio-amaterskih opsega, opseg nije poznat",
   "{record}: invalid locator {value} in {field}, not used for the position": "{record}: neispravan lokator {value} u polju {field}, ne koristi se za poziciju",
   "{record}: invalid value {value} in {field}, ignored": "{record}: neispravna vrednost {value} u polju {field}, zanemarena",
+  "{record}: locator {value} in GRIDSQUARE is only a Maidenhead field (20° x 10°), the QSO is placed at its center": "{record}: lokator {value} u GRIDSQUARE označava samo Maidenhead polje (20° x 10°), veza je postavljena u njegov centar",
   "{record}: locator {value} in {field} cut to {locator}": "{record}: lokator {value} u polju {field} skraćen je na {locator}",
   "{record}: missing CALL, skipped": "{record}: nedostaje CALL, preskočeno",
   "{record}: missing or invalid QSO_DATE or TIME_ON, skipped": "{record}: QSO_DATE ili TIME_ON nedostaje ili nije ispravan, preskočeno",

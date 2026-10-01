@@ -8,11 +8,11 @@
   "Grid cells: {count}": "Broj ćelija mreže: {count}",
   "Level": "Nivo",
   "Maidenhead grid": "Maidenhead mreža",
-  "Maidenhead, locator, grid, QTH, square, ham radio": "Maidenhead, lokator, mreža, QTH, kvadrat, radio-amater",
+  "Maidenhead, locator, grid, QTH, square, ham radio": "Maidenhead, lokator, mreža, QTH, kvadrat, radio-amaterizam",
   "Square (4 characters, 2° x 1°)": "Kvadrat (4 znaka, 2° x 1°)",
   "Subsquare (6 characters, 5' x 2.5')": "Podkvadrat (6 znakova, 5' x 2,5')",
   "The extent lies outside the world or cannot be converted to EPSG:4326": "Obuhvat je van granica sveta ili ga nije moguće pretvoriti u EPSG:4326",
   "The grid style could not be applied: {error}": "Stil mreže nije moguće primeniti: {error}",
-  "The grid would have {count} cells, more than the limit of {limit}. Choose a smaller extent or a coarser level.": "Mreža bi imala {count} ćelija, više od ograničenja od {limit}. Izaberite manji obuhvat ili krupniji nivo.",
+  "The grid would have {count} cells, more than the limit of {limit}. Choose a smaller extent or a coarser level.": "Mreža bi imala {count} ćelija, a dozvoljeno je najviše {limit}. Izaberite manji obuhvat ili krupniji nivo.",
   "Unknown grid level {level}": "Nepoznat nivo mreže {level}"
 }

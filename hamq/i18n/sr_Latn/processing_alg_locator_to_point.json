@@ -4,7 +4,7 @@
   "Locator to point": "Lokator u tačku",
   "Locator {text} was cut to 8 characters: {locator}": "Lokator {text} je skraćen na 8 znakova: {locator}",
   "Maidenhead locators": "Maidenhead lokatori",
-  "Maidenhead, locator, QTH, point, ham radio": "Maidenhead, lokator, QTH, tačka, radio-amater",
+  "Maidenhead, locator, QTH, point, ham radio": "Maidenhead, lokator, QTH, tačka, radio-amaterizam",
   "No valid Maidenhead locator was given (2, 4, 6 or 8 characters, e.g. KN04ft)": "Nije zadat nijedan ispravan Maidenhead lokator (2, 4, 6 ili 8 znakova, npr. KN04ft)",
   "Points: {count}": "Broj tačaka: {count}",
   "{text} is not a valid Maidenhead locator, skipped": "{text} nije ispravan Maidenhead lokator, preskočen je"

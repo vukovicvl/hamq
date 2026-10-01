@@ -17,13 +17,17 @@
   "The QSO layers are in edit mode. The new QSOs were saved in the GeoPackage and show up after you save or discard your edits.": "Slojevi veza su u režimu uređivanja. Nove veze su sačuvane u GeoPackage fajlu i pojaviće se kada sačuvate ili odbacite svoje izmene.",
   "The QSO layers are in edit mode. The recalculated values were saved in the GeoPackage; saving your edits may overwrite some of them.": "Slojevi veza su u režimu uređivanja. Ponovo izračunate vrednosti su sačuvane u GeoPackage fajlu; čuvanje vaših izmena može da prepiše neke od njih.",
   "The folder {folder} could not be created: {error}": "Nije moguće napraviti fasciklu {folder}: {error}",
+  "The folder {folder} is not writable, so HamQ cannot save to {path}. Check the folder permissions or choose another GeoPackage in the HamQ settings.": "U fasciklu {folder} nije dozvoljeno upisivanje, pa HamQ ne može da čuva podatke u {path}. Proverite prava pristupa fascikli ili izaberite drugi GeoPackage u HamQ podešavanjima.",
+  "The folder {folder} is not writable, so {path} cannot be created. Check the folder permissions or choose another GeoPackage in the HamQ settings.": "U fasciklu {folder} nije dozvoljeno upisivanje, pa {path} ne može da se napravi. Proverite prava pristupa fascikli ili izaberite drugi GeoPackage u HamQ podešavanjima.",
   "The old QSO paths could not be deleted: {error}": "Brisanje starih putanja veza nije uspelo: {error}",
   "{path} could not be opened: {error}": "Nije moguće otvoriti {path}: {error}",
   "{path} could not be prepared for HamQ: {error}": "Nije moguće pripremiti {path} za HamQ: {error}",
   "{path} could not be read: {error}": "Nije moguće pročitati {path}: {error}",
+  "{path} could not be written: {error}. Check the permissions of the file and its folder, or choose another GeoPackage in the HamQ settings.": "Upisivanje u {path} nije uspelo: {error}. Proverite prava pristupa fajlu i njegovoj fascikli ili izaberite drugi GeoPackage u HamQ podešavanjima.",
   "{path} has a table {table} that HamQ cannot use": "{path} ima tabelu {table} koju HamQ ne može da koristi",
   "{path} has duplicate QSOs, so dedup_key cannot get a UNIQUE index; imports still skip duplicates": "{path} sadrži duplikate veza, pa dedup_key ne može da dobije UNIQUE indeks; uvoz i dalje preskače duplikate",
   "{path} is a folder, not a GeoPackage file": "{path} je fascikla, a ne GeoPackage fajl",
   "{path} is not a GeoPackage: {error}": "{path} nije GeoPackage: {error}",
+  "{path} is read-only. Check the file permissions or choose another GeoPackage in the HamQ settings.": "{path} je samo za čitanje. Proverite prava pristupa fajlu ili izaberite drugi GeoPackage u HamQ podešavanjima.",
   "{path} was written by a newer HamQ (schema {found}, this version knows {known}); update HamQ if something does not work": "{path} je zapisala novija verzija programa HamQ (šema {found}, ova verzija poznaje šemu {known}); ažurirajte HamQ ako nešto ne radi"
 }

@@ -2,8 +2,9 @@
 
 Datagrams are built with the core encoder (``hamq.core.wsjtx.encode_*``) or taken from
 ``tests/fixtures/wsjtx`` and sent from a plain Python socket to 127.0.0.1 (or to the
-multicast group 224.0.0.1 where the platform allows it); the test processes Qt events until
-the listener's signals arrive.
+multicast group 224.0.0.1 where the platform allows it, or to an address of this computer
+on another interface for the bind address tests); the test processes Qt events until the
+listener's signals arrive.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from qgis.core import QgsApplication
 from hamq.core import i18n, wsjtx
 from hamq.net import wsjtx_listener
 from hamq.net.wsjtx_listener import WsjtxListener
-from hamq.qgis_io.compat import MSG_INFO, MSG_WARNING
+from hamq.qgis_io.compat import MSG_INFO, MSG_WARNING, NET_PROXY_NONE
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "wsjtx"
 PACKETS = sorted(FIXTURES.glob("*.bin")) + sorted((FIXTURES / "captured").glob("*.bin"))
@@ -62,6 +63,30 @@ def free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.bind(("0.0.0.0", 0))
         return probe.getsockname()[1]
+
+
+def lan_address():
+    """An IPv4 address of this computer that is not a loopback address, or ``None``."""
+    from qgis.PyQt.QtNetwork import QNetworkInterface
+
+    for address in QNetworkInterface.allAddresses():
+        text = address.toString()
+        if text and ":" not in text and not address.isLoopback():
+            return text
+    return None
+
+
+def interface_broadcasts():
+    """IPv4 broadcast addresses of the network interfaces of this computer, loopback last."""
+    from qgis.PyQt.QtNetwork import QNetworkInterface
+
+    found = []
+    for interface in QNetworkInterface.allInterfaces():
+        for entry in interface.addressEntries():
+            text = entry.broadcast().toString()
+            if text and ":" not in text and text != "255.255.255.255":
+                found.append((entry.ip().isLoopback(), text))
+    return [text for _loopback, text in sorted(found)]
 
 
 class Recorder:
@@ -574,6 +599,146 @@ def test_join_failure_is_reported(make_listener, monkeypatch, english):
     assert message.startswith("Could not join the multicast group 224.0.0.1: ")
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as exclusive:
         exclusive.bind(("0.0.0.0", port))  # the socket was closed
+
+
+# --------------------------------------------------------------------------- bind address
+#
+# The listener receives only what is sent to the address set in the HamQ settings. With
+# the default 127.0.0.1 nobody else on the network can send QSOs into the log.
+
+
+def test_the_default_address_listens_on_loopback_only(make_listener, sender):
+    listener, recorder, port = start(make_listener)  # 127.0.0.1
+    assert listener._socket.localAddress().toString() == LOOPBACK
+    lan = lan_address()
+    if lan is None:
+        pytest.skip("this computer has no IPv4 address besides the loopback address")
+    sender.sendto(wsjtx.encode_logged_adif("REMOTE", ADIF), (lan, port))
+    send_and_sync(sender, recorder, port)
+    pause(0.2)
+    assert recorder.of("adifLogged") == []
+    sender.sendto(wsjtx.encode_logged_adif("LOCAL", ADIF), (LOOPBACK, port))
+    assert wait_until(lambda: recorder.of("adifLogged") == [("LOCAL", ADIF)])
+
+
+@pytest.mark.parametrize("address", ["", "0.0.0.0"])
+def test_any_address_listens_on_every_interface(make_listener, sender, address):
+    listener, recorder, port = start(make_listener, address=address)
+    assert listener._socket.localAddress().toString() == "0.0.0.0"
+    lan = lan_address()
+    if lan is None:
+        pytest.skip("this computer has no IPv4 address besides the loopback address")
+    sender.sendto(wsjtx.encode_logged_adif("LAN", ADIF), (lan, port))
+    assert wait_until(lambda: recorder.of("adifLogged") == [("LAN", ADIF)])
+
+
+def test_an_address_of_this_computer_listens_on_that_address(make_listener, sender):
+    lan = lan_address()
+    if lan is None:
+        pytest.skip("this computer has no IPv4 address besides the loopback address")
+    listener, recorder, port = start(make_listener, address=lan)
+    assert listener._socket.localAddress().toString() == lan
+    sender.sendto(wsjtx.encode_logged_adif("LOOPBACK", ADIF), (LOOPBACK, port))
+    send_and_sync(sender, recorder, port, host=lan)
+    pause(0.2)
+    assert recorder.of("adifLogged") == []
+    sender.sendto(wsjtx.encode_logged_adif("LAN", ADIF), (lan, port))
+    assert wait_until(lambda: recorder.of("adifLogged") == [("LAN", ADIF)])
+
+
+def test_an_address_of_another_computer_is_reported(make_listener, log_messages, english):
+    listener, recorder = make_listener()
+    port = free_port()
+    assert not listener.start("192.0.2.1", port)  # TEST-NET-1: never an address of ours
+    assert not listener.is_running()
+    ((message,),) = recorder.of("errorOccurred")
+    assert message == (
+        f"Cannot listen on 192.0.2.1 (UDP port {port}): 192.0.2.1 is not an address of this "
+        "computer. In the HamQ settings, enter the address WSJT-X sends to (File > Settings "
+        "> Reporting > UDP Server), usually 127.0.0.1."
+    )
+    assert (message, "HamQ", MSG_WARNING) in log_messages
+
+
+def test_broadcast_addresses_listen_on_every_interface(make_listener, sender):
+    addresses = ["255.255.255.255", *interface_broadcasts()[:2]]
+    for address in addresses:
+        listener, recorder, port = start(make_listener, address=address)
+        assert listener.address() == address
+        assert listener._socket.localAddress().toString() == "0.0.0.0"
+        send_and_sync(sender, recorder, port)
+        listener.stop()
+
+
+def test_the_socket_bypasses_the_proxy(make_listener):
+    # Qt would look up the system proxy (synchronously, in the GUI thread) for nothing.
+    listener, recorder, port = start(make_listener)
+    assert listener._socket.proxy().type() == NET_PROXY_NONE
+
+
+# --------------------------------------------------------------------------- current error
+
+
+def test_current_error_is_shown_again_in_the_new_language(make_listener):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as other_program:
+        other_program.bind(("0.0.0.0", 0))
+        port = other_program.getsockname()[1]
+        listener, recorder = make_listener()
+        assert listener.current_error() == ""
+        assert not listener.start(LOOPBACK, port)
+        ((message,),) = recorder.of("errorOccurred")
+        assert listener.current_error() == message
+        assert message.startswith(f"UDP port {port} is already in use")
+        try:
+            i18n.set_language(i18n.LANG_SR_LATN)
+            latin = listener.current_error()
+            assert latin.startswith(f"UDP port {port} je već zauzet")
+            assert "File > Settings > Reporting > UDP Server" in latin
+            i18n.set_language(i18n.LANG_SR_CYRL)
+            cyrillic = listener.current_error()
+            assert cyrillic.startswith(f"UDP порт {port} је већ заузет")
+            assert "File > Settings > Reporting > UDP Server" in cyrillic  # WSJT-X's own menu
+        finally:
+            i18n.set_language(i18n.LANG_EN)
+        assert listener.current_error() == message
+        listener.stop()  # still the problem of the last start
+        assert listener.current_error() == message
+    assert listener.start(LOOPBACK, port)  # the port is free now
+    assert listener.current_error() == ""
+    assert len(recorder.of("errorOccurred")) == 1
+
+
+@pytest.mark.parametrize(
+    ("address", "port", "latin"),
+    [
+        ("not an address", 2237, "Neispravna WSJT-X adresa not an address: "),
+        (LOOPBACK, 0, "Neispravan UDP port 0: unesite broj od 1 do 65535"),
+        ("192.0.2.1", 2237, "Nije moguće slušati na adresi 192.0.2.1 (UDP port 2237): "),
+    ],
+)
+def test_current_error_of_other_start_problems(make_listener, address, port, latin, english):
+    listener, recorder = make_listener()
+    assert not listener.start(address, port)
+    ((message,),) = recorder.of("errorOccurred")
+    assert listener.current_error() == message
+    try:
+        i18n.set_language(i18n.LANG_SR_LATN)
+        assert listener.current_error().startswith(latin)
+    finally:
+        i18n.set_language(i18n.LANG_EN)
+
+
+def test_current_error_of_an_unexpected_start_error(make_listener, monkeypatch, english):
+    monkeypatch.setattr(wsjtx_listener, "_join_group", lambda socket, group: 1 / 0)
+    listener, recorder = make_listener()
+    assert not listener.start(GROUP, free_port())
+    ((message,),) = recorder.of("errorOccurred")
+    assert message == "The WSJT-X listener could not be started: division by zero"
+    assert listener.current_error() == message
+    i18n.set_language(i18n.LANG_SR_LATN)
+    assert listener.current_error() == (
+        "Slušanje WSJT-X poruka nije moguće pokrenuti: division by zero"
+    )
 
 
 # --------------------------------------------------------------------------- multicast

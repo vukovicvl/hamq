@@ -174,3 +174,29 @@ After a run, `events().dataChanged(path)` refreshes the panel and the layers. PL
 - **CHANGELOG.md** (not edited): "Processing: Import ADIF (deduplicated, cty.dat, report of
   skipped records, layers added to the project) and Recalculate distances and DXCC data
   (M2-04)."
+- **Release pass (2026-10-01)** (storage / processing fixer; docs/ARCHITECTURE.md "Contract
+  changes" updated):
+  - **Size guard:** new advanced parameter `MAX_SIZE_MB` ("Largest ADIF file to read
+    (MB)", int, default `DEFAULT_MAX_SIZE_MB = 200`). Reading takes about ten times the file
+    size in memory, and many tiny records far more, so a larger file, or one with more than
+    `RECORDS_PER_MB = 10_000` records per MB of the limit (counted in 4 MB blocks before
+    parsing, cancelable), is refused with a translated message that says how to go on
+    (split the log or raise the limit). Anything that is not a regular file (`/dev/zero`,
+    a FIFO) is refused.
+  - **Memory:** each record is released as soon as its QSO is made, so a big log is not
+    held twice.
+  - **Station-grid mark:** with my locator set, a record without `MY_GRIDSQUARE` gets
+    `APP_HAMQ_STATION_GRID` = `Y` (`gpkg.STATION_GRID_KEY`) in `adif_extra`;
+    *Recalculate* moves such QSOs to a changed locator (see M2-03 Notes).
+  - A GeoPackage HamQ may not write (read-only file or folder) fails the import and the
+    recalculation with the `GpkgError` text instead of "0 imported".
+  - Duplicates across loggers (core `modes.dedup_mode`), checked end to end on QGIS 4.2.1
+    with the reviewer's two files: a DXKeeper export (`SSB` + `USB` / `LSB`) imports 2
+    QSOs, the LoTW download of the same QSOs (`SSB`) then 0 imported and 2 duplicates
+    (2 rows). The suggested regression test for `tests/qgis/test_processing.py` was not
+    added (processing tests, open).
+  - Tests: 5 new tests in `tests/qgis/test_processing.py` (size limit, record limit, not
+    a regular file, recalculate of QSOs without their own QTH, read-only GeoPackage).
+- Optional, not done: `core/adif.py` `_parse` keeps the file bytes alive while parsing; a
+  `del data` after decoding would cut the read peak by about one file size. The size
+  guard only caps the input.

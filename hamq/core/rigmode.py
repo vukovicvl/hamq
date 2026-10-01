@@ -13,8 +13,9 @@ the usual signal report for a mode (``59`` phone, ``599`` CW and keyboard modes,
 ``-10`` for the WSJT modes that report in dB).
 
 SSB is logged as ``MODE=SSB`` without a submode: that is how most loggers write it,
-and :func:`hamq.core.modes.display_mode` (statistics, duplicate check) then shows
-the same ``SSB`` for every SSB contact.
+and :func:`hamq.core.modes.display_mode` (statistics) then shows the same ``SSB`` for
+every SSB contact. The duplicate check (:func:`hamq.core.modes.dedup_mode`) counts
+``SSB``, ``SSB`` + ``USB`` / ``LSB`` and ``USB`` / ``LSB`` as the same mode anyway.
 
 Pure Python: no ``qgis`` or ``PyQt`` imports.
 """

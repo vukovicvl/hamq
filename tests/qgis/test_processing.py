@@ -276,7 +276,7 @@ def test_parameters_and_outputs():
     assert names("hamq:locator_to_point") == (["LOCATORS", "OUTPUT"], ["OUTPUT"])
     assert names("hamq:maidenhead_grid") == (["EXTENT", "LEVEL", "OUTPUT"], ["OUTPUT"])
     assert names("hamq:import_adif") == (
-        ["INPUT", "GPKG", "MY_GRID", "USE_CTY", "LOAD_LAYERS"],
+        ["INPUT", "GPKG", "MY_GRID", "USE_CTY", "LOAD_LAYERS", "MAX_SIZE_MB"],
         ["DUPLICATES", "GPKG", "IMPORTED", "SKIPPED"],
     )
     assert names("hamq:recalculate") == (
@@ -296,6 +296,10 @@ def test_parameters_and_outputs():
     assert importer.parameterDefinition("USE_CTY").defaultValue() is True
     assert importer.parameterDefinition("LOAD_LAYERS").defaultValue() is True
     assert importer.parameterDefinition("GPKG").defaultFileExtension() == "gpkg"
+    limit = importer.parameterDefinition("MAX_SIZE_MB")
+    assert limit.defaultValue() == 200 and limit.minimum() == 1
+    assert limit.flags() & compat.PARAM_FLAG_ADVANCED
+    assert "memory" in limit.help()
 
 
 @pytest.mark.parametrize("language", [LANG_SR_LATN, LANG_SR_CYRL])
@@ -722,6 +726,39 @@ def test_import_of_a_missing_file_fails(tmp_path, tmp_gpkg, no_cty):
         run("hamq:import_adif", import_parameters(tmp_path / "missing.adi", tmp_gpkg))
 
 
+def test_import_refuses_a_file_above_the_size_limit(tmp_path, tmp_gpkg, no_cty, data_changed):
+    """Reading takes about ten times the file size in memory: a limit keeps QGIS alive."""
+    big = tmp_path / "big.adi"
+    record = adif.format_record({"CALL": "YU1AA", "QSO_DATE": "20260101", "TIME_ON": "1200"})
+    big.write_text("x" * (1024 * 1024) + "\n<EOH>\n" + record, encoding="utf-8")
+    with pytest.raises(QgsProcessingException, match=r"is too large: 1\.1 MB, the limit is 1 MB"):
+        run("hamq:import_adif", import_parameters(big, tmp_gpkg, MAX_SIZE_MB=1))
+    assert not os.path.exists(tmp_gpkg) and data_changed == []
+    results, _ = run("hamq:import_adif", import_parameters(big, tmp_gpkg, MAX_SIZE_MB=2))
+    assert results["IMPORTED"] == 1
+
+
+def test_import_refuses_more_records_than_the_limit_allows(tmp_path, tmp_gpkg, no_cty):
+    """Tiny records cost far more memory than their bytes: 10 000 records per MB of the
+    limit. End tags count in any case and with a length."""
+    many = tmp_path / "many.adi"
+    many.write_bytes(b"<A:0><EOR>\n" * 9_998 + b"<a:0><eor>\n<a:0><Eor:0>\n")
+    results, _ = run("hamq:import_adif", import_parameters(many, tmp_gpkg, MAX_SIZE_MB=1))
+    assert (results["IMPORTED"], results["SKIPPED"]) == (0, 10_000)
+    many.write_bytes(many.read_bytes() + b"<A:0><EOR>")
+    with pytest.raises(QgsProcessingException, match="has too many records: more than 10\u00a0000"):
+        run("hamq:import_adif", import_parameters(many, tmp_gpkg, MAX_SIZE_MB=1))
+
+
+def test_import_refuses_what_is_not_a_regular_file(tmp_path, tmp_gpkg, no_cty):
+    with pytest.raises(QgsProcessingException, match="could not be read: not a regular file"):
+        run("hamq:import_adif", import_parameters(tmp_path, tmp_gpkg))
+    if os.path.exists("/dev/zero"):  # endless: reading it would never finish
+        with pytest.raises(QgsProcessingException, match="not a regular file"):
+            run("hamq:import_adif", import_parameters("/dev/zero", tmp_gpkg))
+    assert not os.path.exists(tmp_gpkg)
+
+
 def test_import_of_a_file_without_records_warns(tmp_path, tmp_gpkg, no_cty):
     empty = tmp_path / "empty.adi"
     empty.write_bytes(b"Nothing here\n<ADIF_VER:5>3.1.4\n<EOH>\n")
@@ -884,6 +921,63 @@ def test_recalculate_keeps_or_replaces_the_logged_qth(tmp_gpkg, no_cty):
     )
     assert results["UPDATED"] == 6
     assert {row["my_gridsquare"] for row in gpkg.read_qso_rows(tmp_gpkg)} == {"JN95wg"}
+
+
+def test_recalculate_moves_qsos_imported_without_their_own_qth(tmp_gpkg, cty_calls, cty_database):
+    """n1mm.adi has no MY_GRIDSQUARE: its QSOs got my locator at the import and follow a
+    new one. The WSJT-X QSOs were logged with MY_GRIDSQUARE KN04ft and keep it."""
+    run("hamq:import_adif", import_parameters(ADIF / "n1mm.adi", tmp_gpkg))
+    run("hamq:import_adif", import_parameters(ADIF / "wsjtx_log.adi", tmp_gpkg))
+    before = {row["fid"]: row for row in gpkg.read_qso_rows(tmp_gpkg)}
+    results, _ = run("hamq:recalculate", {"GPKG": tmp_gpkg, "MY_GRID": "JN95wg"})
+    rows = gpkg.read_qso_rows(tmp_gpkg)
+    moved = [row for row in rows if row["source"] == "adif:n1mm.adi"]
+    kept = [row for row in rows if row["source"] == "adif:wsjtx_log.adi"]
+    assert (len(moved), len(kept)) == (5, 6)
+    assert results["UPDATED"] == 5
+    assert {row["my_gridsquare"] for row in moved} == {"JN95wg"}
+    origin = maidenhead.to_latlon("JN95wg")
+    for row in moved:
+        match = cty_database.lookup(row["call"])
+        if match is None:  # EA8 is not in the cty.dat excerpt: no position
+            assert row["distance_km"] is None
+        else:
+            assert row["distance_km"] == pytest.approx(
+                geo.distance_km(*origin, match.lat, match.lon)
+            )
+    assert {row["my_gridsquare"] for row in kept} == {"KN04ft"}
+    for row in kept:
+        assert row["distance_km"] == before[row["fid"]]["distance_km"]
+    nine_a = next(row for row in moved if row["call"] == "9A5XYZ")
+    assert nine_a["distance_km"] == pytest.approx(358.4, abs=0.1)  # was 407.6 from KN04ft
+
+
+def test_import_and_recalculate_of_a_read_only_geopackage_fail(
+    tmp_path, no_cty, data_changed, english
+):
+    path = str(tmp_path / "log.gpkg")
+    run("hamq:import_adif", import_parameters(ADIF / "wsjtx_log.adi", path))
+    data_changed.clear()
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    file_mode = os.stat(path).st_mode
+    os.chmod(path, file_mode & ~0o222)
+    os.chmod(locked, 0o555)
+    try:
+        if os.access(path, os.W_OK) or os.access(locked, os.W_OK):
+            pytest.skip("this user may write read-only files (root?)")
+        with pytest.raises(QgsProcessingException, match="is read-only. Check the file"):
+            run("hamq:import_adif", import_parameters(ADIF / "n1mm.adi", path))
+        with pytest.raises(QgsProcessingException, match="is read-only"):
+            run("hamq:recalculate", {"GPKG": path, "MY_GRID": "JN95wg"})
+        new = str(locked / "new.gpkg")
+        with pytest.raises(QgsProcessingException, match="is not writable, so .* cannot be"):
+            run("hamq:import_adif", import_parameters(ADIF / "n1mm.adi", new))
+    finally:
+        os.chmod(path, file_mode)
+        os.chmod(locked, 0o755)
+    assert data_changed == []
+    assert len(gpkg.read_qso_rows(path)) == 6
 
 
 def test_recalculate_fills_dxcc_data_from_cty(tmp_gpkg, monkeypatch, cty_database, data_changed):

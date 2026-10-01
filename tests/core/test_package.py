@@ -247,3 +247,169 @@ def test_pyproject_version_parser(tmp_path):
     assert package.pyproject_version(path) == "1.2.3"
     path.write_text('[project]\nname = "x"\n', encoding="utf-8")
     assert package.pyproject_version(path) is None
+
+
+# --- data files, unexpected files and --release ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("relative", "data"),
+    [
+        ("cty.dat", True),
+        ("resources/CTY.CSV", True),
+        ("hamq.gpkg", True),
+        ("hamq.gpkg-wal", True),
+        ("hamq.gpkg-shm", True),
+        ("logs/my log.adi", True),
+        ("old.sqlite", True),
+        ("cty.dat.1234.part", True),
+        ("plugin.py", False),
+        ("i18n/sr_Latn/plugin.json", False),
+        ("resources/styles/qso.qml", False),
+        ("gpkg.py", False),
+    ],
+)
+def test_is_data_file(relative, data):
+    assert package.is_data_file(Path(relative)) is data
+
+
+def test_data_files_are_never_packed(fake_root, tmp_path):
+    plugin = fake_root / "hamq"
+    for name in ("cty.dat", "cty.csv", "hamq.gpkg", "hamq.gpkg-wal", "log.adi"):
+        (plugin / name).write_text("data", encoding="utf-8")
+    (plugin / "resources" / "cty.csv").write_text("data", encoding="utf-8")
+    result = run_script("--root", str(fake_root), "--output-dir", str(tmp_path / "out"))
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(tmp_path / "out" / f"hamq-{metadata_version()}.zip") as archive:
+        names = archive.namelist()
+    assert sorted(names) == [
+        "hamq/LICENSE",
+        "hamq/__init__.py",
+        "hamq/metadata.txt",
+        "hamq/resources/icons/hamq.svg",
+    ]
+    for name in ("cty.dat", "cty.csv", "hamq.gpkg", "hamq.gpkg-wal", "log.adi"):
+        assert f"not packed (data file, never shipped): hamq/{name}" in result.stderr
+    assert "hamq/resources/cty.csv" in result.stderr
+
+
+def test_unexpected_file_type_fails(fake_root, tmp_path):
+    (fake_root / "hamq" / "notes.docx").write_bytes(b"PK")
+    (fake_root / "hamq" / "resources" / "tool.exe").write_bytes(b"MZ")
+    result = run_script("--root", str(fake_root), "--output-dir", str(tmp_path / "out"))
+    assert result.returncode == 1
+    assert "hamq/notes.docx: unexpected file type" in result.stderr
+    assert "hamq/resources/tool.exe: unexpected file type" in result.stderr
+    assert not (tmp_path / "out").exists()
+
+
+def test_scan_sorts_the_files(fake_root):
+    plugin = fake_root / "hamq"
+    (plugin / "cty.dat").write_text("data", encoding="utf-8")
+    (plugin / "x.bin").write_bytes(b"\0")
+    scanned = package.scan(plugin)
+    assert scanned.files == [
+        Path("__init__.py"),
+        Path("metadata.txt"),
+        Path("resources/icons/hamq.svg"),
+    ]
+    assert scanned.data == [Path("cty.dat")]
+    assert scanned.unexpected == [Path("x.bin")]
+    assert package.plugin_files(plugin) == scanned.files
+    assert package.scan(fake_root / "missing") == package.Scan([], [], [])
+
+
+def test_changelog_versions(tmp_path):
+    path = tmp_path / "CHANGELOG.md"
+    path.write_text(
+        "# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2027-01-01\n\n- x\n\n"
+        "## [0.1.0] - 2026-10-01\n\n### Added\n\n- [link](https://example.org) [0.0.9]\n",
+        encoding="utf-8",
+    )
+    assert package.changelog_versions(path) == ["Unreleased", "0.2.0", "0.1.0"]
+
+
+def _release_ready(root: Path) -> None:
+    version = metadata_version()
+    (root / "CHANGELOG.md").write_text(
+        f"# Changelog\n\n## [Unreleased]\n\n## [{version}] - 2026-10-01\n\n### Added\n\n- HamQ\n",
+        encoding="utf-8",
+    )
+    path = root / "hamq" / "metadata.txt"
+    lines = [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("changelog=")
+    ]
+    lines.append(f"changelog={version}: first experimental release")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_release_needs_changelog_and_metadata_changelog(fake_root):
+    metadata = package.read_metadata(fake_root / "hamq" / "metadata.txt")
+    metadata.pop("changelog", None)
+    problems = package.release_problems(fake_root, metadata)
+    assert any("CHANGELOG.md" in problem and "is missing" in problem for problem in problems)
+    assert any("'changelog' is missing" in problem for problem in problems)
+    assert any("not a git checkout" in problem for problem in problems)
+
+    (fake_root / "CHANGELOG.md").write_text("## [Unreleased]\n\n- x\n", encoding="utf-8")
+    metadata["changelog"] = "<b>9.9.9</b>: bold"
+    problems = package.release_problems(fake_root, metadata)
+    version = metadata["version"]
+    assert any(f"no '## [{version}]' section (found: Unreleased)" in p for p in problems)
+    assert any(f"does not mention version {version}" in p for p in problems)
+    assert any("without HTML tags" in p for p in problems)
+
+
+def test_release_fails_without_the_version_section(fake_root, tmp_path):
+    result = run_script(
+        "--root", str(fake_root), "--output-dir", str(tmp_path / "out"), "--release"
+    )
+    assert result.returncode == 1
+    assert "CHANGELOG.md" in result.stderr
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_release_from_a_clean_git_checkout(fake_root, tmp_path):
+    _release_ready(fake_root)
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(fake_root), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    (fake_root / "hamq" / "extra.py").write_text('"""Extra."""\n', encoding="utf-8")
+    git("init", "-q")
+    git("add", "hamq/__init__.py", "hamq/extra.py", "hamq/metadata.txt", "hamq/resources")
+    git("add", "LICENSE")
+    git(
+        *("-c", "user.name=HamQ", "-c", "user.email=hamq@example.org"),
+        *("-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "x"),
+    )
+    out = tmp_path / "out"
+    result = run_script("--root", str(fake_root), "--output-dir", str(out), "--release")
+    assert result.returncode == 0, result.stderr
+
+    (fake_root / "hamq" / "scratch.py").write_text("x = 1\n", encoding="utf-8")
+    result = run_script("--root", str(fake_root), "--output-dir", str(out), "--release")
+    assert result.returncode == 1
+    assert "uncommitted or untracked files" in result.stderr
+    assert "hamq/scratch.py" in result.stderr
+    (fake_root / "hamq" / "scratch.py").unlink()
+    (fake_root / "hamq" / "extra.py").unlink()  # a committed file missing from the zip
+    result = run_script("--root", str(fake_root), "--output-dir", str(out), "--release")
+    assert result.returncode == 1
+    assert "hamq/extra.py" in result.stderr
+    git("checkout", "-q", "--", "hamq/extra.py")
+    # an ignored data file is skipped, not reported as uncommitted
+    (fake_root / ".gitignore").write_text("cty.dat\n", encoding="utf-8")
+    (fake_root / "hamq" / "cty.dat").write_text("data", encoding="utf-8")
+    result = run_script("--root", str(fake_root), "--output-dir", str(out), "--release")
+    assert result.returncode == 0, result.stderr
+    assert "not packed (data file, never shipped): hamq/cty.dat" in result.stderr

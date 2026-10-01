@@ -10,11 +10,17 @@ The log is one GeoPackage file (``HamQSettings.gpkg_path``) with three tables:
     The geodesic line from my QTH to the other station (:func:`geodesic_path`) for every
     QSO with both points, with the ``core.qso.PATH_FIELDS`` columns: ``qso_fid`` (the
     QSO's ``fid``, indexed), ``distance_km`` and ``bearing_deg`` (the QSO's values),
-    ``band`` and ``mode`` (the display mode: SUBMODE if present, else MODE).
+    ``band`` and ``mode`` (the display mode: SUBMODE if present, else MODE). The trigger
+    ``qso_delete_paths`` (``AFTER DELETE ON qso``) deletes the paths of a deleted QSO, so a
+    QSO deleted in QGIS, or in any other program, leaves no line behind.
 ``hamq_meta`` (attribute table)
-    ``key`` / ``value`` rows; ``schema_version`` is :data:`SCHEMA_VERSION`, for migrations.
+    ``key`` / ``value`` rows; ``schema_version`` is :data:`SCHEMA_VERSION`, for migrations
+    (2 since the trigger; the upgrade from 1 removes the paths of QSOs deleted before).
 
 QGIS (GDAL) creates the tables, so they are registered like any GeoPackage layer.
+``adif_extra`` of a QSO that got my locator as ``my_gridsquare`` at the import (the record
+had no MY_GRIDSQUARE) holds :data:`STATION_GRID_KEY`; :func:`recalculate` moves such QSOs
+to a changed locator.
 Datetimes are converted with ``fields.to_qdatetime`` and stored as UTC ISO 8601 text
 (``2026-09-15T18:45:00.000Z``), the form GDAL writes; :func:`read_qso_rows` returns
 aware UTC ``datetime`` objects.
@@ -54,8 +60,11 @@ Every function here may run in a worker thread; each call opens its own connecti
 write waits up to 10 s for a file locked by another connection (1 s in the main thread,
 which must not freeze). Functions that read return empty results for a file that does
 not exist. A file that cannot be created or read, or that is not a GeoPackage HamQ can
-use, raises :class:`GpkgError` with a translated message. A bad QSO never stops an
-insert: it is counted in ``InsertResult.failed`` with a warning.
+use, raises :class:`GpkgError` with a translated message. So does a write to a read-only
+file or into a folder without write permission (SQLite creates its journal next to the
+file): the message says what to check, before anything is written. Such a file can still
+be read and shown. A bad QSO never stops an insert: it is counted in
+``InsertResult.failed`` with a warning.
 """
 
 from __future__ import annotations
@@ -101,6 +110,7 @@ __all__ = [
     "PATH_STEP_KM",
     "QSO_LAYER",
     "SCHEMA_VERSION",
+    "STATION_GRID_KEY",
     "GpkgError",
     "InsertResult",
     "ensure_gpkg",
@@ -117,13 +127,21 @@ QSO_LAYER, PATH_LAYER = "qso", "qso_path"
 META_TABLE = "hamq_meta"
 #: Version of the table layout described in the module docstring. Raise it, and add a step
 #: to ``_migrate``, whenever the layout changes (AGENTS.md: update PLAN.md too).
-SCHEMA_VERSION = 1
+#: 1: tables and indexes; 2: the trigger that deletes the paths of a deleted QSO.
+SCHEMA_VERSION = 2
 #: Largest distance between two vertices of a QSO path.
 PATH_STEP_KM = 100.0
+#: ``adif_extra`` key (an ADIF application-defined field) with the value ``"Y"``: the QSO's
+#: ``my_gridsquare`` was not in the log but filled in from my locator at the import, so
+#: :func:`recalculate` moves the QSO to a changed locator (``Import ADIF`` sets it).
+STATION_GRID_KEY = "APP_HAMQ_STATION_GRID"
 
 _DEDUP_INDEX = "qso_dedup_key_idx"
 _PATH_INDEX = "qso_path_qso_fid_idx"
 _META_INDEX = "hamq_meta_key_idx"
+_PATH_TRIGGER = "qso_delete_paths"  # AFTER DELETE ON qso: delete the QSO's paths
+# SQLite result codes (the low byte of extended codes such as SQLITE_READONLY_DIRECTORY)
+_SQLITE_READONLY, _SQLITE_CANTOPEN = 8, 14
 _META_FIELDS: tuple[tuple[str, str], ...] = (("key", "text"), ("value", "text"))
 _SCHEMA_KEY = "schema_version"
 _EPSG_4326 = "EPSG:4326"
@@ -191,12 +209,16 @@ def ensure_gpkg(path: str) -> None:
       ``hamq_meta`` tables, its folder too.
     - In an existing GeoPackage, missing tables are added and missing columns are added to
       ``qso`` and ``qso_path`` (other columns and all data stay).
-    - The UNIQUE index on ``qso.dedup_key``, the index on ``qso_path.qso_fid`` and the
-      schema version are created when missing. When old duplicates prevent the UNIQUE
+    - The UNIQUE index on ``qso.dedup_key``, the index on ``qso_path.qso_fid``, the trigger
+      that deletes the paths of a deleted QSO and the schema version are created when
+      missing (an older schema is upgraded). When old duplicates prevent the UNIQUE
       index, a plain index is made and a warning is logged; inserts skip duplicates anyway.
 
-    A complete file is only read. Raises :class:`GpkgError` when the file cannot be
-    created or written, is not a GeoPackage, or has a ``qso`` / ``qso_path`` /
+    A complete file is only read. A read-only file (or one in a folder without write
+    permission) that only lacks indexes, the trigger or the newest schema version is used
+    as it is, so it can still be shown (an info message is logged once); writes to it
+    raise :class:`GpkgError`. Raises :class:`GpkgError` when the file cannot be created or
+    written (with what to check), is not a GeoPackage, or has a ``qso`` / ``qso_path`` /
     ``hamq_meta`` table of another kind (a geometry other than Point / MultiLineString, a
     CRS other than EPSG:4326, a table GeoPackage does not register). Such a file is never
     changed.
@@ -215,6 +237,7 @@ def _ensure(path: str) -> None:
             tr("The folder {folder} could not be created: {error}").format(folder=folder, error=exc)
         ) from exc
     if not os.path.exists(path) or os.path.getsize(path) == 0:
+        _raise_unwritable(path, creating=True)
         _create_layer(path, QSO_LAYER, QSO_FIELDS, compat.WKB_POINT, new_file=True)
         _create_layer(path, PATH_LAYER, PATH_FIELDS, compat.WKB_MULTILINESTRING)
         _create_layer(path, META_TABLE, _META_FIELDS, compat.WKB_NO_GEOMETRY)
@@ -234,12 +257,16 @@ def _ensure(path: str) -> None:
                     path=path, table=META_TABLE
                 )
             )
+        missing_tables = [name for name in _HAMQ_TABLES if schema.get(name) is None]
+        missing_fields = _missing_fields(schema)
+        if missing_tables or missing_fields:
+            _raise_unwritable(path)
         for name in (QSO_LAYER, PATH_LAYER):
-            if schema.get(name) is None:
+            if name in missing_tables:
                 _create_layer(path, name, _FIELD_SPECS[name], _WKB_TYPES[name])
-        if meta is None:
+        if META_TABLE in missing_tables:
             _create_layer(path, META_TABLE, _META_FIELDS, compat.WKB_NO_GEOMETRY)
-        _add_missing_fields(path, schema)
+        _add_missing_fields(path, missing_fields)
     _finish_schema(path)
 
 
@@ -307,7 +334,8 @@ def _read_schema(path: str) -> dict[str, _Table]:
                 "SELECT table_name, data_type FROM gpkg_contents"
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise GpkgError(
+            # e.g. a WAL journal that cannot be created in a read-only folder
+            raise _access_error(path, exc) or GpkgError(
                 tr("{path} is not a GeoPackage: {error}").format(path=path, error=exc)
             ) from exc
         try:
@@ -338,7 +366,7 @@ def _read_schema(path: str) -> dict[str, _Table]:
                         )
                     )
         except sqlite3.DatabaseError as exc:
-            raise GpkgError(
+            raise _access_error(path, exc) or GpkgError(
                 tr("{path} could not be read: {error}").format(path=path, error=exc)
             ) from exc
     return tables
@@ -358,14 +386,18 @@ def _check_table(path: str, name: str, table: _Table) -> None:
         )
 
 
-def _add_missing_fields(path: str, schema: dict[str, _Table]) -> None:
-    """Add the HamQ columns an existing ``qso`` / ``qso_path`` table lacks (plain SQL)."""
+def _missing_fields(schema: dict[str, _Table]) -> dict[str, list[tuple[str, str]]]:
+    """The HamQ columns ``(name, kind)`` each existing ``qso`` / ``qso_path`` table lacks."""
     missing = {
         name: [(column, kind) for column, kind in _FIELD_SPECS[name] if column not in table.columns]
         for name, table in schema.items()
         if name in _FIELD_SPECS
     }
-    missing = {name: columns for name, columns in missing.items() if columns}
+    return {name: columns for name, columns in missing.items() if columns}
+
+
+def _add_missing_fields(path: str, missing: dict[str, list[tuple[str, str]]]) -> None:
+    """Add the columns of :func:`_missing_fields` to their tables (plain SQL)."""
     if not missing:
         return
     try:
@@ -376,7 +408,7 @@ def _add_missing_fields(path: str, schema: dict[str, _Table]) -> None:
                         f"ALTER TABLE {_quote(name)} ADD COLUMN {_quote(column)} {_SQL_TYPES[kind]}"
                     )
     except sqlite3.Error as exc:
-        raise GpkgError(
+        raise _access_error(path, exc) or GpkgError(
             tr("Fields could not be added to layer {layer} in {path}: {error}").format(
                 layer=", ".join(missing), path=path, error=exc
             )
@@ -391,36 +423,44 @@ def _add_missing_fields(path: str, schema: dict[str, _Table]) -> None:
 
 
 def _finish_schema(path: str) -> None:
-    """Indexes and the schema version (plain SQL, in one transaction when anything is
-    missing; a complete file is only read, so no write lock is taken)."""
+    """Indexes, the trigger and the schema version (plain SQL, in one transaction when
+    anything is missing; a complete file is only read, so no write lock is taken). A file
+    HamQ may not write is left as it is: reading it needs none of these."""
     with _sqlite(path) as connection:
         try:
             if _schema_complete(connection, path):
                 return
         except sqlite3.Error as exc:
-            raise GpkgError(
+            raise _access_error(path, exc) or GpkgError(
                 tr("{path} could not be prepared for HamQ: {error}").format(path=path, error=exc)
             ) from exc
+    problem = _write_problem(path)
+    if problem is not None:
+        _log_once(path, "unwritable", problem, compat.MSG_INFO)
+        return
     try:
         with _Database(path) as database, database.transaction() as connection:
             _ensure_dedup_index(connection, path)
             connection.execute(
                 f'CREATE INDEX IF NOT EXISTS "{_PATH_INDEX}" ON "{PATH_LAYER}" ("qso_fid")'
             )
+            _ensure_path_trigger(connection)
             _ensure_version(connection, path)
     except sqlite3.Error as exc:
-        raise GpkgError(
+        raise _access_error(path, exc) or GpkgError(
             tr("{path} could not be prepared for HamQ: {error}").format(path=path, error=exc)
         ) from exc
 
 
 def _schema_complete(connection: sqlite3.Connection, path: str) -> bool:
-    """True when the indexes and the current schema version are there already."""
+    """True when the indexes, the trigger and the current schema version are there already."""
     indexes = {
         str(name).lower()
         for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
     }
     if _PATH_INDEX not in indexes or _META_INDEX not in indexes:
+        return False
+    if not _has_path_trigger(connection):
         return False
     if not _has_unique_index(connection, QSO_LAYER, "dedup_key") and not (
         _DEDUP_INDEX in indexes and _file_key(path) in _unique_index_tried
@@ -481,6 +521,40 @@ def _has_unique_index(connection: sqlite3.Connection, table: str, column: str) -
     return False
 
 
+def _has_path_trigger(connection: sqlite3.Connection) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND lower(name) = ? "
+            "AND lower(tbl_name) = ?",
+            (_PATH_TRIGGER, QSO_LAYER),
+        ).fetchone()
+        is not None
+    )
+
+
+def _ensure_path_trigger(connection: sqlite3.Connection) -> None:
+    """``AFTER DELETE ON qso``: delete the paths of the deleted QSO (schema 2).
+
+    QGIS deletes features of the ``qso`` layer with plain SQL, as does every other program;
+    the trigger keeps their paths from staying on the map, and from showing twice when the
+    QSO is imported again (it then gets a new ``fid`` and path).
+    """
+    if _has_path_trigger(connection):
+        return
+    connection.execute(f"DROP TRIGGER IF EXISTS {_quote(_PATH_TRIGGER)}")  # on another table
+    connection.execute(
+        f"CREATE TRIGGER {_quote(_PATH_TRIGGER)} AFTER DELETE ON {_quote(QSO_LAYER)} BEGIN "
+        f'DELETE FROM {_quote(PATH_LAYER)} WHERE "qso_fid" = OLD.'
+        f"{_quote(_primary_key(connection, QSO_LAYER))}; END"
+    )
+
+
+def _primary_key(connection: sqlite3.Connection, table: str) -> str:
+    """Name of the integer primary key (the ``fid``) of ``table``."""
+    info = connection.execute(f"PRAGMA table_info({_quote(table)})").fetchall()
+    return next((str(row[1]) for row in info if row[5] == 1), "fid")
+
+
 def _ensure_version(connection: sqlite3.Connection, path: str) -> None:
     connection.execute(
         f'CREATE UNIQUE INDEX IF NOT EXISTS "{_META_INDEX}" ON "{META_TABLE}" ("key")'
@@ -488,7 +562,8 @@ def _ensure_version(connection: sqlite3.Connection, path: str) -> None:
     row = connection.execute(
         f'SELECT "value" FROM "{META_TABLE}" WHERE "key" = ?', (_SCHEMA_KEY,)
     ).fetchone()
-    if row is None:
+    if row is None:  # a new file, or one whose version went missing: migrate from "unknown"
+        _migrate(connection, 0)
         connection.execute(
             f'INSERT INTO "{META_TABLE}" ("key", "value") VALUES (?, ?)',
             (_SCHEMA_KEY, str(SCHEMA_VERSION)),
@@ -528,9 +603,15 @@ def _warn_newer(path: str, found: int) -> None:
 def _migrate(connection: sqlite3.Connection, version: int) -> None:
     """Bring the tables from schema ``version`` (0: unknown) to :data:`SCHEMA_VERSION`.
 
-    Version 1 is the first layout; missing tables, columns and indexes are added by
-    :func:`ensure_gpkg` itself, so there is nothing to convert yet.
+    Missing tables, columns, indexes and the trigger are added by :func:`ensure_gpkg`
+    itself (before this step). From 1 to 2: paths of QSOs deleted before the trigger
+    existed are removed; a line without a QSO link (``qso_fid`` NULL, drawn by hand) stays.
     """
+    if version < 2:
+        connection.execute(
+            f'DELETE FROM {_quote(PATH_LAYER)} WHERE "qso_fid" NOT IN '
+            f"(SELECT {_quote(_primary_key(connection, QSO_LAYER))} FROM {_quote(QSO_LAYER)})"
+        )
 
 
 # --- reading -------------------------------------------------------------------------------------
@@ -551,7 +632,7 @@ def existing_dedup_keys(path: str, keys: Iterable[str | None] | None = None) -> 
                 return set()
             return _stored_keys(connection, keys)
         except sqlite3.DatabaseError as exc:
-            raise GpkgError(
+            raise _access_error(path, exc) or GpkgError(
                 tr("{path} could not be read: {error}").format(path=path, error=exc)
             ) from exc
 
@@ -613,7 +694,7 @@ def read_qso_rows(path: str) -> list[dict[str, object]]:
                 rows.append(row)
             return rows
         except sqlite3.DatabaseError as exc:
-            raise GpkgError(
+            raise _access_error(path, exc) or GpkgError(
                 tr("{path} could not be read: {error}").format(path=path, error=exc)
             ) from exc
 
@@ -643,7 +724,9 @@ def insert_qsos(
       module docstring); when one of them is in edit mode, a warning says why the new
       QSOs are not shown yet.
 
-    Raises :class:`GpkgError` when the file cannot be created or opened.
+    Raises :class:`GpkgError` when the file cannot be created or opened, and when it may
+    not be written (a read-only file or folder; the message says what to check): before
+    anything is written when the file system tells, else at the first refused write.
     """
     result = InsertResult()
     items = list(qsos) if qsos is not None else []
@@ -651,6 +734,7 @@ def insert_qsos(
         return result
     chunk_size = max(1, int(chunk_size))
     ensure_gpkg(path)
+    _raise_unwritable(path)
     warnings = _Warnings(result.warnings)
     main_thread = _in_main_thread()
     if main_thread and _editing_layers(path):
@@ -660,19 +744,21 @@ def insert_qsos(
                 "and show up after you save or discard your edits."
             )
         )
-    with _Database(path, main_thread=main_thread) as database:
-        writer = _Writer(database, result, warnings)
-        total = len(items)
-        _set_progress(feedback, 0.0)
-        for start in range(0, total, chunk_size):
-            if _is_canceled(feedback):
-                result.canceled = True
-                break
-            writer.write_chunk(items[start : start + chunk_size])
-            _set_progress(feedback, 100.0 * min(total, start + chunk_size) / total)
+    try:
+        with _Database(path, main_thread=main_thread) as database:
+            writer = _Writer(database, result, warnings)
+            total = len(items)
+            _set_progress(feedback, 0.0)
+            for start in range(0, total, chunk_size):
+                if _is_canceled(feedback):
+                    result.canceled = True
+                    break
+                writer.write_chunk(items[start : start + chunk_size])
+                _set_progress(feedback, 100.0 * min(total, start + chunk_size) / total)
+    finally:  # also when a refused write ends the insert: show what was saved before it
+        if main_thread and (result.inserted or result.paths):
+            _refresh_project_layers(path)
     warnings.finish()
-    if main_thread and (result.inserted or result.paths):
-        _refresh_project_layers(path)
     return result
 
 
@@ -736,6 +822,9 @@ class _Writer:
         try:
             written = self._write(rows)
         except sqlite3.Error as exc:  # the chunk was rolled back
+            denied = _access_error(self.database.file, exc)
+            if denied is not None:  # the next chunks would fail the same way
+                raise denied from exc
             for row in rows:
                 result.failed += 1
                 warnings.add(
@@ -1141,7 +1230,10 @@ def recalculate(
     - My position (origin): ``MY_LAT`` / ``MY_LON`` kept in ``adif_extra``, else the
       QSO's ``my_gridsquare`` when it is a valid locator, else ``station.grid``. So QSOs
       logged with their own QTH keep it, and QSOs without one follow the station locator
-      on every recalculation (``my_gridsquare`` is not changed). With
+      on every recalculation (``my_gridsquare`` is not changed). A ``my_gridsquare`` that
+      the import filled in from my locator (:data:`STATION_GRID_KEY` in ``adif_extra``) is
+      not the QSO's own: such a QSO follows a valid ``station.grid`` too and gets it as
+      ``my_gridsquare`` (without a valid ``station.grid`` it keeps the one it has). With
       ``force_station=True`` every QSO uses ``station.grid`` and gets it as
       ``my_gridsquare`` (I moved, or the log has a wrong locator); this is ignored, with
       a warning, when ``station.grid`` is not a valid locator.
@@ -1160,9 +1252,11 @@ def recalculate(
     writing starts; a canceled recalculation changes nothing and returns 0. Warnings are
     logged and sent to ``feedback.pushWarning`` when it has one. In the main thread,
     project layers of the file are refreshed afterwards. Raises :class:`GpkgError` when
-    the file cannot be created or opened.
+    the file cannot be created or opened, and when it may not be written (a read-only
+    file or folder, see :func:`insert_qsos`).
     """
     ensure_gpkg(path)
+    _raise_unwritable(path)
     station = station if station is not None else Station()
     station_grid = _valid_locator(getattr(station, "grid", ""))
     collected: list[str] = []
@@ -1282,6 +1376,9 @@ def _recalculate(
                     )
             written += len(chunk)
         except sqlite3.Error as exc:
+            denied = _access_error(database.file, exc)
+            if denied is not None:  # every other write would fail the same way
+                raise denied from exc
             warnings.add(tr("Recalculated values could not be saved: {error}").format(error=exc))
         _set_progress(
             feedback, 60.0 + 10.0 * min(len(changed), start + _WRITE_CHUNK) / max(1, len(changed))
@@ -1336,6 +1433,9 @@ def _rebuild_paths(
                 f"(SELECT {_quote(database.qso.key)} FROM {_quote(QSO_LAYER)})"
             )
     except sqlite3.Error as exc:
+        denied = _access_error(database.file, exc)
+        if denied is not None:
+            raise denied from exc
         warnings.add(tr("The old QSO paths could not be deleted: {error}").format(error=exc))
         return
     sql = database.insert_sql(table, path_names)
@@ -1368,6 +1468,12 @@ def _recalculated(
     call = values.get("call")
     call = call.strip() if isinstance(call, str) else ""
     extra = _json_object(values.get("adif_extra"))
+    # my_gridsquare filled in from my locator at the import: not the QSO's own QTH
+    follows_station = (
+        not force_station
+        and station_grid is not None
+        and str(extra.get(STATION_GRID_KEY) or "").strip().upper() == "Y"
+    )
     # A minimal ADIF record: record_to_qso applies the import rules to it. Date and time
     # only have to be valid; they are not used.
     record = {"CALL": call or "UNKNOWN", "QSO_DATE": "20000101", "TIME_ON": "0000"}
@@ -1384,7 +1490,7 @@ def _recalculated(
         ("cq_zone", "CQZ"),
         ("itu_zone", "ITUZ"),
     ]
-    if not force_station:
+    if not force_station and not follows_station:
         columns.append(("my_gridsquare", "MY_GRIDSQUARE"))
     for name, key in columns:
         value = values.get(name)
@@ -1401,8 +1507,12 @@ def _recalculated(
         "cq_zone": qso.cq_zone,
         "itu_zone": qso.itu_zone,
     }
-    if force_station:
+    if force_station or follows_station:
         new["my_gridsquare"] = station_grid
+    elif _valid_locator(values.get("my_gridsquare")) is not None:
+        # The import rules may name the same QTH more precisely now (my locator refines a
+        # coarser logged one): the column stays the locator the origin comes from.
+        new["my_gridsquare"] = qso.my_gridsquare
     position = row.point
     new_point = None
     derived = _point(qso.lat, qso.lon)
@@ -1473,7 +1583,7 @@ class _Database:
             self.paths = self._table(PATH_LAYER)
         except sqlite3.Error as exc:
             self.connection.close()
-            raise GpkgError(
+            raise _access_error(path, exc) or GpkgError(
                 tr("{path} could not be read: {error}").format(path=path, error=exc)
             ) from exc
 
@@ -1577,6 +1687,68 @@ def _in_main_thread() -> bool:
 
 
 # --- helpers -------------------------------------------------------------------------------------
+
+
+def _write_problem(path: str, *, creating: bool = False) -> str | None:
+    """Why HamQ may not write the GeoPackage ``path``, as a translated message that says
+    what to check; ``None`` when the file system allows it. ``creating``: a new file.
+
+    SQLite writes a journal next to the file, so the folder must be writable too; only an
+    open WAL journal (``-wal`` and ``-shm`` there and writable) does without. Permissions
+    the file system does not report here (ACLs, network shares) show up at the first
+    write instead (:func:`_access_error`).
+    """
+    folder = os.path.dirname(os.path.abspath(path))
+    if not creating and os.path.exists(path) and not os.access(path, os.W_OK):
+        return tr(
+            "{path} is read-only. Check the file permissions or choose another GeoPackage "
+            "in the HamQ settings."
+        ).format(path=path)
+    if os.access(folder, os.W_OK | os.X_OK):
+        return None
+    if creating:
+        return tr(
+            "The folder {folder} is not writable, so {path} cannot be created. Check the "
+            "folder permissions or choose another GeoPackage in the HamQ settings."
+        ).format(folder=folder, path=path)
+    if all(os.access(path + suffix, os.W_OK) for suffix in ("-wal", "-shm")):
+        return None
+    return tr(
+        "The folder {folder} is not writable, so HamQ cannot save to {path}. Check the "
+        "folder permissions or choose another GeoPackage in the HamQ settings."
+    ).format(folder=folder, path=path)
+
+
+def _raise_unwritable(path: str, *, creating: bool = False) -> None:
+    """:class:`GpkgError` with :func:`_write_problem` when HamQ may not write ``path``."""
+    problem = _write_problem(path, creating=creating)
+    if problem is not None:
+        raise GpkgError(problem)
+
+
+def _access_error(path: str, exc: BaseException) -> GpkgError | None:
+    """The :class:`GpkgError` for a SQLite error that a missing write permission caused
+    (``SQLITE_READONLY``, also ``_DIRECTORY`` and the like; ``SQLITE_CANTOPEN`` when the
+    file or folder is not writable), with what to check; ``None`` for other errors."""
+    code = getattr(exc, "sqlite_errorcode", None)  # Python 3.11+; older: the message
+    if isinstance(code, int):
+        readonly = (code & 0xFF) == _SQLITE_READONLY
+        cantopen = (code & 0xFF) == _SQLITE_CANTOPEN
+    else:
+        text = str(exc).lower()
+        readonly = "readonly database" in text
+        cantopen = "unable to open database file" in text
+    if not (readonly or cantopen):
+        return None
+    problem = _write_problem(path)
+    if problem is None:
+        if not readonly:  # CANTOPEN for another reason (the file went away, ...)
+            return None
+        problem = tr(
+            "{path} could not be written: {error}. Check the permissions of the file and its "
+            "folder, or choose another GeoPackage in the HamQ settings."
+        ).format(path=path, error=exc)
+    return GpkgError(problem)
 
 
 def _connect(path: str, *, write: bool, timeout: float = _SQLITE_TIMEOUT_S) -> sqlite3.Connection:
@@ -1720,12 +1892,12 @@ def _file_key(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
-def _log_once(path: str, kind: str, message: str) -> None:
+def _log_once(path: str, kind: str, message: str, level: Any = None) -> None:
     key = (_file_key(path), kind)
     if key in _logged_once:
         return
     _logged_once.add(key)
-    _log(message)
+    _log(message, level)
 
 
 class _Warnings:

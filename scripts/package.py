@@ -3,13 +3,24 @@
 
 Usage::
 
-    python3 scripts/package.py [--output-dir DIR] [--root DIR]
+    python3 scripts/package.py [--output-dir DIR] [--root DIR] [--release]
 
 The zip has a single top folder ``hamq/`` with the plugin package, without
 ``__pycache__``, ``*.pyc``, ``tests``, ``dist`` and hidden files (``.git*``),
 plus the repository ``LICENSE`` as ``hamq/LICENSE``. ``metadata.txt`` is
 validated first (required keys, icon, version equal to ``pyproject.toml``);
 on problems they are printed and the script exits with status 1.
+
+Only the file types the plugin is made of are packed (:data:`ALLOWED_SUFFIXES`).
+Data files are never packed, wherever they are in ``hamq/``: the AD1C country files
+``cty.dat`` / ``cty.csv`` (the user downloads them; they must not be bundled), QSO logs
+and databases (``*.gpkg*``, ``*.adi``, ``*.sqlite``, ...). They are listed as skipped.
+Any other unexpected file stops the build, so a stray file never ships unnoticed.
+
+``--release`` checks what a published zip needs on top of that: a
+``## [<version>]`` section in ``CHANGELOG.md``, a plain-text ``changelog`` in
+``metadata.txt`` that names the version, and, in a git checkout, no uncommitted or
+untracked files under ``hamq/`` (the zip must be the committed sources).
 """
 
 from __future__ import annotations
@@ -18,9 +29,11 @@ import argparse
 import ast
 import configparser
 import re
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from typing import NamedTuple
 
 PLUGIN_DIR_NAME = "hamq"
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +61,25 @@ REQUIRED_KEYS = (
 EXCLUDED_DIRS = frozenset({"__pycache__", "tests", "dist", "build"})
 EXCLUDED_SUFFIXES = (".pyc", ".pyo", ".orig", ".rej", ".swp", "~")
 EXCLUDED_NAMES = frozenset({"Thumbs.db", "desktop.ini"})
+#: File types the plugin is made of; anything else that is not excluded stops the build.
+ALLOWED_SUFFIXES = frozenset({".py", ".json", ".txt", ".qml", ".svg", ".png", ".md"})
+ALLOWED_NAMES = frozenset({"LICENSE"})
+#: Data that must never be in the zip: the AD1C country files (downloaded by the user,
+#: never bundled), QSO logs and databases. Skipped wherever they are in ``hamq/``.
+DATA_FILE_NAMES = frozenset({"cty.dat", "cty.csv"})
+DATA_FILE_SUFFIXES = (
+    ".adi",
+    ".adif",
+    ".adx",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".log",
+    ".part",
+)
+_GEOPACKAGE_RE = re.compile(r"\.gpkg(?:-[a-z]+)?$", re.IGNORECASE)  # hamq.gpkg, -wal, -shm
+_CHANGELOG_SECTION_RE = re.compile(r"^## \[(?P<version>[^\]]+)\]", re.MULTILINE)
+_HTML_TAG_RE = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
 _VERSION_RE = re.compile(r"^\d+\.\d+(\.\d+)?([-.]?[0-9A-Za-z]+)*$")
 _QGIS_VERSION_RE = re.compile(r"^\d+\.\d+(\.\d+)?$")
 
@@ -135,7 +167,111 @@ def validate(root: Path) -> tuple[dict[str, str], list[str]]:
                 f"version mismatch: metadata.txt has {version}, "
                 f"pyproject.toml has {project_version}"
             )
+
+    for relative in scan(plugin_dir).unexpected:
+        problems.append(
+            f"{PLUGIN_DIR_NAME}/{relative.as_posix()}: unexpected file type; remove it, or add "
+            "its type to ALLOWED_SUFFIXES in scripts/package.py if the plugin needs it"
+        )
     return metadata, problems
+
+
+def changelog_versions(path: Path) -> list[str]:
+    """Versions of the ``## [x.y.z]`` sections of a Keep a Changelog file, in file order."""
+    text = path.read_text(encoding="utf-8")
+    return [match.group("version").strip() for match in _CHANGELOG_SECTION_RE.finditer(text)]
+
+
+def uncommitted_files(root: Path) -> list[str] | None:
+    """Files under ``hamq/`` (and ``LICENSE``) whose working copy differs from the last
+    commit: modified, added, deleted, renamed or untracked, as ``git status`` reports them.
+    Files that are never packed (caches, hidden files, data files) and ignored files do
+    not count. ``None`` when ``root`` is not the top of a git checkout or git is not
+    available."""
+    try:
+        top = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
+            return None
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "-z", "--untracked-files=all"]
+            + ["--", PLUGIN_DIR_NAME, "LICENSE"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if status.returncode != 0:
+        return None
+    entries = status.stdout.split("\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        if entry[0] in "RC":  # a rename or copy: the source path follows as its own entry
+            index += 1
+        path = entry[3:]
+        parts = Path(path).parts
+        if parts and parts[0] == PLUGIN_DIR_NAME:
+            relative = Path(*parts[1:])
+            if is_excluded(relative) or is_data_file(relative):
+                continue
+        paths.append(path)
+    return paths
+
+
+def release_problems(root: Path, metadata: dict[str, str]) -> list[str]:
+    """What a published zip needs besides :func:`validate`: the CHANGELOG section and the
+    metadata ``changelog`` of the version, and committed sources (``--release``)."""
+    problems: list[str] = []
+    version = metadata.get("version", "").strip()
+    changelog_path = root / "CHANGELOG.md"
+    if not changelog_path.is_file():
+        problems.append(f"{changelog_path} is missing")
+    else:
+        try:
+            versions = changelog_versions(changelog_path)
+        except (OSError, UnicodeDecodeError) as exc:
+            problems.append(f"{changelog_path}: cannot be read ({exc})")
+        else:
+            if version not in versions:
+                problems.append(
+                    f"CHANGELOG.md has no '## [{version}]' section (found: "
+                    f"{', '.join(versions) or 'none'}); rename '## [Unreleased]' when releasing"
+                )
+    changelog = metadata.get("changelog", "").strip()
+    if not changelog:
+        problems.append(
+            "metadata.txt: 'changelog' is missing; plugins.qgis.org and the QGIS plugin "
+            "manager show it (plain text, e.g. 'changelog=0.1.0: first release ...')"
+        )
+    else:
+        if version and version not in changelog:
+            problems.append(f"metadata.txt: 'changelog' does not mention version {version}")
+        if _HTML_TAG_RE.search(changelog):
+            problems.append("metadata.txt: 'changelog' must be plain text, without HTML tags")
+    pending = uncommitted_files(root)
+    if pending is None:
+        problems.append(
+            f"{root} is not a git checkout (or git is not available): build a release from "
+            "a clean checkout so that the zip holds the committed sources"
+        )
+    elif pending:
+        shown = ", ".join(pending[:10])
+        more = f" and {len(pending) - 10} more" if len(pending) > 10 else ""
+        problems.append(
+            f"uncommitted or untracked files under {PLUGIN_DIR_NAME}/ or LICENSE: {shown}{more}; "
+            "commit them (or remove them) before building a release"
+        )
+    return problems
 
 
 def is_excluded(relative: Path) -> bool:
@@ -146,14 +282,51 @@ def is_excluded(relative: Path) -> bool:
     return relative.name in EXCLUDED_NAMES or relative.name.endswith(EXCLUDED_SUFFIXES)
 
 
-def plugin_files(plugin_dir: Path) -> list[Path]:
-    """Files of the plugin package to ship, relative to ``plugin_dir``, sorted."""
-    files = []
+def is_data_file(relative: Path) -> bool:
+    """True for data that must never ship: cty.dat / cty.csv, logs and databases."""
+    name = relative.name.lower()
+    return (
+        name in DATA_FILE_NAMES
+        or name.endswith(DATA_FILE_SUFFIXES)
+        or _GEOPACKAGE_RE.search(name) is not None
+    )
+
+
+def is_allowed_type(relative: Path) -> bool:
+    """True for the file types the plugin is made of (:data:`ALLOWED_SUFFIXES`)."""
+    return relative.name in ALLOWED_NAMES or relative.suffix.lower() in ALLOWED_SUFFIXES
+
+
+class Scan(NamedTuple):
+    """The files under ``hamq/``, relative to it and sorted: what is packed, the data files
+    that are skipped and the files of an unexpected type (which stop the build)."""
+
+    files: list[Path]
+    data: list[Path]
+    unexpected: list[Path]
+
+
+def scan(plugin_dir: Path) -> Scan:
+    """Sort the files of the plugin package (see :class:`Scan`); excluded ones are left out."""
+    result = Scan([], [], [])
+    if not plugin_dir.is_dir():
+        return result
     for path in sorted(plugin_dir.rglob("*")):
         relative = path.relative_to(plugin_dir)
-        if path.is_file() and not is_excluded(relative):
-            files.append(relative)
-    return files
+        if not path.is_file() or is_excluded(relative):
+            continue
+        if is_data_file(relative):
+            result.data.append(relative)
+        elif is_allowed_type(relative):
+            result.files.append(relative)
+        else:
+            result.unexpected.append(relative)
+    return result
+
+
+def plugin_files(plugin_dir: Path) -> list[Path]:
+    """Files of the plugin package to ship, relative to ``plugin_dir``, sorted."""
+    return scan(plugin_dir).files
 
 
 def build(root: Path, output_dir: Path, version: str) -> Path:
@@ -184,17 +357,31 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_ROOT,
         help="repository root with hamq/, LICENSE and pyproject.toml (default: this repository)",
     )
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="also check what a published zip needs: the CHANGELOG.md section and the "
+        "metadata changelog of the version, and committed sources",
+    )
     args = parser.parse_args(argv)
     root = args.root.resolve()
     output_dir = (args.output_dir or root / "dist").resolve()
 
     metadata, problems = validate(root)
+    if args.release and metadata:
+        problems.extend(release_problems(root, metadata))
     if problems:
         print("package.py: the plugin cannot be packaged:", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
 
+    for relative in scan(root / PLUGIN_DIR_NAME).data:
+        print(
+            f"package.py: not packed (data file, never shipped): "
+            f"{PLUGIN_DIR_NAME}/{relative.as_posix()}",
+            file=sys.stderr,
+        )
     zip_path = build(root, output_dir, metadata["version"].strip())
     with zipfile.ZipFile(zip_path) as archive:
         count = len(archive.namelist())

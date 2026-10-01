@@ -14,17 +14,27 @@ Rules (docs/ARCHITECTURE.md, "core/qso.py"):
 - ``band``: ``BAND`` normalized (``20M`` -> ``20m``), else the band of ``FREQ``. A
   ``BAND`` that is not an ADIF band takes the band of ``FREQ`` when there is one and is
   kept as logged otherwise, with a warning either way.
-- ``mode`` / ``submode`` are uppercased. The dedup key ``CALL|YYYYMMDDHHMM|band|mode``
-  (minute precision) uses :func:`display_mode`, so FT4 logged as ``MODE=FT4`` or as
-  ``MODE=MFSK SUBMODE=FT4`` is the same QSO.
+- ``mode`` / ``submode`` are uppercased and stored as logged. The dedup key
+  ``CALL|YYYYMMDDHHMM|band|mode`` (minute precision) uses :func:`modes.dedup_mode`, so one
+  QSO is one key however a logger wrote its mode: FT4 as ``MODE=FT4`` or ``MODE=MFSK
+  SUBMODE=FT4`` (``FT4``); SSB as ``MODE=SSB``, ``MODE=SSB SUBMODE=USB`` / ``LSB`` or
+  ``MODE=USB`` (``SSB``); PSK31 as ``MODE=PSK31``, ``MODE=PSK SUBMODE=PSK31`` or
+  ``MODE=PSK`` (``PSK``); ``JT65B`` as ``JT65``.
 - ``gridsquare`` / ``my_gridsquare`` go through :func:`maidenhead.normalize`. A
   10-character locator is cut to 8 with a warning; an invalid one is kept as logged,
   with a warning, and is not used for a position.
 - Position of the other station (``loc_source``): ``LAT`` / ``LON`` (``latlon``) >
   centre of ``GRIDSQUARE`` (``grid``) > cty.dat entity (``cty``) > none (no point).
+  A 2-character ``GRIDSQUARE`` is a whole 20 x 10 degree field: the cty.dat entity is
+  used when its position lies in that field; otherwise the centre of the field, with a
+  warning.
 - My position, the start of distance, bearing and path: ``MY_LAT`` / ``MY_LON`` >
   centre of ``MY_GRIDSQUARE`` > centre of the station locator > none.
-  ``my_gridsquare`` is the record's ``MY_GRIDSQUARE``, else the station locator.
+  ``my_gridsquare`` is the record's ``MY_GRIDSQUARE``, else the station locator. A
+  ``MY_GRIDSQUARE`` that is a coarser version of the station locator (``KN04`` with
+  ``KN04ft`` in the settings, as WSJT-X writes its "My Grid") names the same place less
+  precisely: without ``MY_LAT`` / ``MY_LON``, the station locator is used for both. A
+  ``MY_GRIDSQUARE`` that names another cell (portable operation) is used as logged.
 - ``dxcc``, ``country``, ``cont``, ``cq_zone``, ``itu_zone``: the record's ``DXCC``,
   ``COUNTRY``, ``CONT``, ``CQZ`` and ``ITUZ`` win; missing (or invalid) ones come from
   cty.dat. ``country`` from cty.dat is the name of the *DXCC* entity: cty.dat also lists
@@ -72,7 +82,7 @@ from .adif import dedup_key as _adif_dedup_key
 from .adif import parse_freq, parse_latlon, parse_qso_datetime
 from .bands import BAND_ORDER, band_from_freq, normalize_band
 from .i18n import tr
-from .modes import display_mode
+from .modes import dedup_mode, display_mode
 
 if TYPE_CHECKING:
     from .cty import CtyDatabase
@@ -227,7 +237,8 @@ def record_to_qso(
 
     ``qso`` is ``None`` when the record has no ``CALL`` or no valid ``QSO_DATE`` /
     ``TIME_ON``. ``station`` gives my locator (used when the record has no
-    ``MY_LAT`` / ``MY_LON`` or ``MY_GRIDSQUARE``), ``cty`` the DXCC data and the
+    ``MY_LAT`` / ``MY_LON`` and no ``MY_GRIDSQUARE`` or only a coarser version of the
+    station locator, such as ``KN04`` for ``KN04ft``), ``cty`` the DXCC data and the
     fallback position, ``source`` the value of the ``source`` column (``"wsjtx"``,
     ``"adif:<file name>"``). Field names may be in any case; values are stripped and
     empty ones count as missing. Warnings are translated, never raised; besides data
@@ -347,10 +358,21 @@ def _convert(record: object, context: _Context, index: int | None) -> tuple[Qso 
 
     gridsquare, grid = _locator(get("GRIDSQUARE"), "GRIDSQUARE", warn)
     my_gridsquare, my_grid = _locator(get("MY_GRIDSQUARE"), "MY_GRIDSQUARE", warn)
-    if my_gridsquare is None:
-        my_gridsquare = context.station_grid
     position = _position(get("LAT"), get("LON"), "LAT", "LON", warn)
     my_position = _position(get("MY_LAT"), get("MY_LON"), "MY_LAT", "MY_LON", warn)
+    station_grid = context.station_grid
+    if (
+        my_position is None
+        and my_grid is not None
+        and station_grid is not None
+        and len(my_grid) < len(station_grid)
+        and station_grid.startswith(my_grid)
+    ):
+        # A coarser version of my own locator (WSJT-X "My Grid" KN04, settings KN04ft):
+        # the same place, known more precisely from the settings.
+        my_gridsquare = my_grid = station_grid
+    if my_gridsquare is None:
+        my_gridsquare = station_grid
 
     dxcc = _number(get("DXCC"), "DXCC", 0, 999, warn)
     country = get("COUNTRY") or None
@@ -359,8 +381,11 @@ def _convert(record: object, context: _Context, index: int | None) -> tuple[Qso 
     itu_zone = _number(get("ITUZ"), "ITUZ", 1, 90, warn)
 
     lat = lon = loc_source = None
+    field = None  # a 2-character GRIDSQUARE: used only when cty.dat has nothing better
     if position is not None:
         (lat, lon), loc_source = position, _LOC_LATLON
+    elif grid is not None and len(grid) == maidenhead.LEVEL_FIELD:
+        field = grid
     elif grid is not None:
         (lat, lon), loc_source = maidenhead.to_latlon(grid), _LOC_GRID
     cty = context.cty
@@ -386,8 +411,16 @@ def _convert(record: object, context: _Context, index: int | None) -> tuple[Qso 
                 cq_zone = match.cq_zone
             if itu_zone is None:
                 itu_zone = match.itu_zone
-            if lat is None:
+            if lat is None and (field is None or _inside(field, match.lat, match.lon)):
                 lat, lon, loc_source = match.lat, match.lon, _LOC_CTY
+    if lat is None and field is not None:
+        (lat, lon), loc_source = maidenhead.to_latlon(field), _LOC_GRID
+        warn(
+            tr(
+                "{record}: locator {value} in GRIDSQUARE is only a Maidenhead field (20° x 10°), the QSO is placed at its center"
+            ),
+            value=field,
+        )
 
     if my_position is not None:
         my_lat, my_lon = my_position
@@ -422,7 +455,7 @@ def _convert(record: object, context: _Context, index: int | None) -> tuple[Qso 
         f"{when.year:04d}{when.month:02d}{when.day:02d}",
         f"{when.hour:02d}{when.minute:02d}",
         band or "",
-        display_mode(mode, submode),
+        dedup_mode(mode, submode),
     )
     qso = Qso(
         call=call,
@@ -586,6 +619,12 @@ def _valid_locator(value: object) -> str | None:
         return maidenhead.normalize(value)
     except ValueError:
         return None
+
+
+def _inside(locator: str, lat: float, lon: float) -> bool:
+    """Whether ``(lat, lon)`` lies in the cell of ``locator`` (edges included)."""
+    lat_min, lon_min, lat_max, lon_max = maidenhead.to_bounds(locator)
+    return lat_min <= lat <= lat_max and lon_min <= lon <= lon_max
 
 
 # --- warnings ---------------------------------------------------------------------------------

@@ -45,7 +45,7 @@ from .core.i18n import tr, tr_noop
 from .events import events
 from .gui import get_icon
 from .processing.provider import HamQProvider
-from .qgis_io.compat import DOCK_RIGHT, MSG_CRITICAL, MSG_WARNING, QAction
+from .qgis_io.compat import DOCK_RIGHT, LOG_PANEL_SHOWS_HTML, MSG_CRITICAL, MSG_WARNING, QAction
 
 if TYPE_CHECKING:
     from .controller import HamQController
@@ -77,6 +77,18 @@ def plugin_metadata() -> dict[str, str]:
     return dict(parser.items("general"))
 
 
+def _log(message: str, level: Any) -> None:
+    """Log ``message`` in the HamQ tab of the QGIS log panel.
+
+    Escaped where the panel renders HTML (QGIS 3.34 to 3.40.6, ``LOG_PANEL_SHOWS_HTML``):
+    an error text can quote a log file or the network, and ``<lambda>`` in a traceback
+    would vanish.
+    """
+    if LOG_PANEL_SHOWS_HTML:
+        message = html.escape(message, quote=False)
+    QgsMessageLog.logMessage(message, LOG_TAG, level)
+
+
 def _guarded(method: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap a Qt slot: an exception is logged instead of escaping into Qt."""
 
@@ -88,7 +100,7 @@ def _guarded(method: Callable[..., Any]) -> Callable[..., Any]:
             message = tr("Unexpected error in {slot}: {error}").format(
                 slot=method.__qualname__, error=exc
             )
-            QgsMessageLog.logMessage(f"{message}\n{traceback.format_exc()}", LOG_TAG, MSG_CRITICAL)
+            _log(f"{message}\n{traceback.format_exc()}", MSG_CRITICAL)
             return None
 
     return wrapper
@@ -267,7 +279,7 @@ class HamQPlugin:
         )
         self.recalculate_action = self.add_action(
             "paths.svg",
-            tr_noop("Recalculate distances and paths..."),
+            tr_noop("Recalculate distances and DXCC data..."),  # the algorithm's name
             self._on_recalculate_triggered,
             add_to_toolbar=False,
             object_name="HamQRecalculateAction",
@@ -413,8 +425,10 @@ class HamQPlugin:
     def _apply_texts(self, entry: _ActionEntry) -> None:
         # entry.text / entry.tooltip were marked with tr_noop() at the call site.
         entry.action.setText(tr(entry.text))
-        if entry.tooltip:
-            entry.action.setToolTip(tr(entry.tooltip))
+        # Always set the tooltip: at startup QGIS's shortcuts manager turns the tooltip
+        # of every main window action into fixed text ("<b>Log QSO</b>"). An empty one
+        # makes Qt show the action's text again, in the current language.
+        entry.action.setToolTip(tr(entry.tooltip) if entry.tooltip else "")
 
     def _remove_actions(self) -> None:
         while self._actions:
@@ -664,4 +678,4 @@ class HamQPlugin:
 
     @staticmethod
     def _log(message: str, level: Any) -> None:
-        QgsMessageLog.logMessage(message, LOG_TAG, level)
+        _log(message, level)

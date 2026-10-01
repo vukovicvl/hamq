@@ -9,7 +9,7 @@
   "Processing is not available: {error}": "Processing nije dostupan: {error}",
   "QSO already in the log: {call} {band} {mode}": "Veza je već u logu: {call} {band} {mode}",
   "QSOs saved: {inserted}, duplicates: {duplicates}": "Sačuvane veze: {inserted}, duplikati: {duplicates}",
-  "Set your QTH locator in the HamQ settings to see distances, bearings and paths.": "Podesite svoj QTH lokator u HamQ podešavanjima da biste videli rastojanja, azimute i putanje.",
+  "Set your QTH locator in the HamQ settings to see distances, bearings and paths.": "Unesite svoj QTH lokator u HamQ podešavanjima da biste videli rastojanja, azimute i putanje.",
   "Settings...": "Podešavanja...",
   "The GeoPackage with the QSO log cannot be used: {error}": "GeoPackage sa logom veza ne može da se koristi: {error}",
   "The Processing algorithm {algorithm} could not be opened: {error}": "Processing algoritam {algorithm} ne može da se otvori: {error}",

@@ -12,7 +12,8 @@ user has changed them since. The plugin wires the process-wide signals with
 :func:`connect_events`::
 
     plugin.add_cleanup(layers.connect_events())   # dataChanged -> refresh_layers,
-                                                  # languageChanged -> retranslate_layers
+                                                  # languageChanged -> retranslate_layers,
+                                                  # saved edits -> dataChanged
 
 Everything here works on ``QgsProject.instance()`` and must run in the main thread.
 """
@@ -20,12 +21,13 @@ Everything here works on ``QgsProject.instance()`` and must run in the main thre
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 from collections.abc import Callable
 
 from qgis.core import QgsMessageLog, QgsProject, QgsProviderRegistry, QgsVectorLayer
-from qgis.PyQt.QtCore import QCoreApplication, QThread
+from qgis.PyQt.QtCore import QCoreApplication, QThread, QTimer
 
 from ..core.i18n import tr, tr_noop
 from . import compat
@@ -214,24 +216,37 @@ def connect_events() -> Callable[[], None]:
     """Keep the project layers up to date: ``events().dataChanged(path)`` refreshes the
     layers of ``path`` and ``events().languageChanged`` retranslates them.
 
-    Returns a function that disconnects both again; it is safe to call more than once.
-    Register it with ``plugin.add_cleanup(layers.connect_events())``.
+    A saved edit session of a ``qso`` / ``qso_path`` layer in the project (one there now
+    or added later) emits ``events().dataChanged(path)`` too, once, right after the save:
+    the file changed. So the paths of QSOs the user deleted (the GeoPackage trigger
+    deletes them) leave the map at once, and the statistics count what the log holds.
+
+    Returns a function that disconnects all of it again; it is safe to call more than
+    once. Register it with ``plugin.add_cleanup(layers.connect_events())``.
     """
     from ..events import events
 
     hub = events()
+    project = QgsProject.instance()
+    watched: dict[str, tuple[QgsVectorLayer, Callable[[], None]]] = {}
+    watch = functools.partial(_watch_commits, watched)
+    forget = functools.partial(_forget_commits, watched)
     connections = [
         (hub.dataChanged, _on_data_changed),
         (hub.languageChanged, _on_language_changed),
+        (project.layersAdded, watch),
+        (project.layersRemoved, forget),
     ]
     for signal, slot in connections:
         signal.connect(slot)
+    watch(list(project.mapLayers().values()))
 
     def disconnect() -> None:
         while connections:
             signal, slot = connections.pop()
             with contextlib.suppress(TypeError, RuntimeError):
                 signal.disconnect(slot)
+        forget(list(watched))
 
     return disconnect
 
@@ -251,6 +266,58 @@ def _on_language_changed(language: str) -> None:
         retranslate_layers()
     except Exception as exc:  # a slot must never let an exception reach Qt
         _log(tr("The HamQ layers could not be translated: {error}").format(error=exc))
+
+
+# Files with saved edits, announced together once the save is over.
+_committed: set[str] = set()
+
+
+def _watch_commits(watched: dict, added: list) -> None:
+    """Announce the saved edits of the ``qso`` / ``qso_path`` layers among ``added``;
+    ``watched`` maps layer ids to ``(layer, slot)``."""
+    for layer in added:
+        if not isinstance(layer, QgsVectorLayer) or layer.providerType() != "ogr":
+            continue
+        source = _decode_source(layer.source())
+        if source is None or source[1] not in _KINDS or layer.id() in watched:
+            continue
+        slot = functools.partial(_on_committed, layer.id())
+        layer.afterCommitChanges.connect(slot)
+        watched[layer.id()] = (layer, slot)
+
+
+def _forget_commits(watched: dict, layer_ids: list) -> None:
+    for layer_id in layer_ids:
+        layer, slot = watched.pop(str(layer_id), (None, None))
+        if layer is not None:
+            with contextlib.suppress(TypeError, RuntimeError):  # deleted with its layer
+                layer.afterCommitChanges.disconnect(slot)
+
+
+def _on_committed(layer_id: str) -> None:
+    try:
+        layer = QgsProject.instance().mapLayer(layer_id)
+        source = None if layer is None else _decode_source(layer.source())
+        if source is None:
+            return
+        if not _committed:
+            # after commitChanges() has returned; several layers saved together: once
+            QTimer.singleShot(0, _announce_commits)
+        _committed.add(source[0])
+    except Exception as exc:  # a slot must never let an exception reach Qt
+        _log(tr("The HamQ layers could not be refreshed: {error}").format(error=exc))
+
+
+def _announce_commits() -> None:
+    from ..events import events
+
+    paths = sorted(_committed)
+    _committed.clear()
+    for path in paths:
+        try:
+            events().dataChanged.emit(path)
+        except Exception as exc:  # a slot must never let an exception reach Qt
+            _log(tr("The HamQ layers could not be refreshed: {error}").format(error=exc))
 
 
 # --- helpers -----------------------------------------------------------------------------------

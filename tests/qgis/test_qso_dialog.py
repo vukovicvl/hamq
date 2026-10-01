@@ -372,6 +372,23 @@ def test_translated_texts_and_validation(make_dialog, language, log_messages):
     assert not [m for m in log_messages if m[2] == MSG_CRITICAL]
 
 
+@pytest.mark.parametrize(
+    ("code", "month"), [("sr_Latn", "oktobar"), ("sr_Cyrl", "октобар"), ("en", "October")]
+)
+def test_calendar_follows_the_hamq_language(make_dialog, language, code, month):
+    """The date popup names months in the HamQ language, not in the system language."""
+    dialog = make_dialog()
+    when = field(dialog, QDateTimeEdit, "HamQQsoDateTime")
+    language(code)
+    calendar = when.calendarWidget()
+    assert calendar is not None
+    assert when.locale().standaloneMonthName(10) == month
+    assert calendar.locale().standaloneMonthName(10) == month
+    assert calendar.locale().monthName(10) == when.locale().monthName(10)
+    set_when(dialog, 2026, 10, 1, 9, 5)
+    assert when.text() == "2026-10-01 09:05"  # the field itself stays ISO, digits only
+
+
 def test_closing_disconnects_from_language_changes(make_dialog, language):
     dialog = make_dialog()
     before = events().receivers(events().languageChanged)

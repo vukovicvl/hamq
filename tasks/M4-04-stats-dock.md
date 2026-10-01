@@ -129,3 +129,7 @@ Radio tab (M7-03) live in the same widget.
   `## Unreleased`: "HamQ panel: statistics tab (QSOs, DXCC entities, unique calls, grid
   squares, longest QSO, by continent / band / mode, first and last QSO), WSJT-X tab,
   Radio tab with rig and rotator control."
+- **Release pass (2026-10-01)** (GUI fixer): every label of the panel shows plain text and
+  tooltips with outside text are escaped (callsigns, countries and client names come from
+  log files and the network); numbers and the calendar follow the HamQ language
+  (`hamq_locale()`). The "Share" column is "Udeo" in Serbian.

@@ -1,10 +1,12 @@
 {
+  "Cancel": "Otkaži",
   "Set your QTH locator in Settings to turn the antenna from the map.": "Podesite svoj QTH lokator u podešavanjima da biste okretali antenu sa mape.",
   "The clicked point could not be converted to latitude and longitude.": "Kliknutu tačku nije moguće pretvoriti u geografsku širinu i dužinu.",
   "The rotator cannot turn to azimuth {azimuth}: its range is {minimum}° to {maximum}°.": "Rotator ne može da se okrene na azimut {azimuth}: njegov raspon je od {minimum}° do {maximum}°.",
   "The rotator range {minimum}° to {maximum}° is not valid; check it in Settings.": "Raspon rotatora od {minimum}° do {maximum}° nije ispravan; proverite ga u podešavanjima.",
   "This point is at the antipode of your QTH: every direction leads there.": "Ova tačka je na antipodu vašeg QTH-a: do nje vode svi pravci.",
   "This point is at your QTH; click farther away.": "Ova tačka je na vašem QTH-u; kliknite dalje od njega.",
+  "Turn": "Okreni",
   "Turn the antenna to azimuth {azimuth} (long path, {distance})? HamQ asks only this first time; later clicks on the map turn the rotator right away.": "Okrenuti antenu na azimut {azimuth} (dugi put, {distance})? HamQ pita samo ovaj put; sledeći klikovi na mapu odmah okreću rotator.",
   "Turn the antenna to azimuth {azimuth} ({distance})? HamQ asks only this first time; later clicks on the map turn the rotator right away.": "Okrenuti antenu na azimut {azimuth} ({distance})? HamQ pita samo ovaj put; sledeći klikovi na mapu odmah okreću rotator.",
   "Turn the rotator": "Okretanje rotatora",

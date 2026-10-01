@@ -33,11 +33,13 @@ Files that may be created or changed:
 - [x] `record_to_qso` / `records_to_qsos` with the contract signatures
 - [x] CALL required, `QSO_DATE` + `TIME_ON` must parse (skip + warning); aware UTC datetimes
 - [x] band: `BAND` normalized, else from `FREQ`; mode / submode uppercased; dedup key via
-      `adif.dedup_key` with `display_mode` (FT4 as `MODE=FT4` or `MFSK`/`FT4` -> same key)
+      `adif.dedup_key` with `display_mode` (FT4 as `MODE=FT4` or `MFSK`/`FT4` -> same key);
+      since the release pass with `modes.dedup_mode` (see Notes)
 - [x] `gridsquare` / `my_gridsquare` normalized; 10 characters cut to 8 + warning; invalid kept
       as logged + warning + not used for a position
 - [x] position `LAT`/`LON` > `GRIDSQUARE` > cty.dat > none (`loc_source`); origin `MY_LAT`/`MY_LON`
       > `MY_GRIDSQUARE` > `station.grid` > none; `my_gridsquare` = record value or `station.grid`
+      (two refinements in the release pass, see Notes)
 - [x] `DXCC`/`COUNTRY`/`CONT`/`CQZ`/`ITUZ` from the record win; missing ones from cty.dat
       (`CtyMatch.dxcc`, `CtyMatch.dxcc_name`); WAE-only entity -> DXCC entity name (documented)
 - [x] distance / bearing with `core/geo.py` when position and origin exist
@@ -71,13 +73,13 @@ Files that may be created or changed:
   3. `FREQ` via `adif.parse_freq` (invalid -> `None` + warning). Band: `BAND` normalized
      (`20M` -> `20m`) when it is an ADIF band, else the band of `FREQ`.
   4. `MODE` / `SUBMODE` uppercased; dedup key `adif.dedup_key(call, YYYYMMDD, HHMM, band or "",
-     display_mode(mode, submode))`.
+     display_mode(mode, submode))`. Release pass: `modes.dedup_mode(mode, submode)` instead.
   5. `GRIDSQUARE`, `MY_GRIDSQUARE` through `maidenhead.normalize`.
   6. `LAT`/`LON` and `MY_LAT`/`MY_LON` via `adif.parse_latlon`, used only as a complete pair.
   7. `DXCC` 0-999, `CQZ` 1-40, `ITUZ` 1-90 (ASCII digits only, `05` -> 5), `CONT` one of the
      seven continents (uppercased), `COUNTRY` as logged.
   8. Position: `LAT`/`LON` -> `latlon`, else locator centre -> `grid`, else cty.dat match ->
-     `cty`, else none. cty.dat is consulted only when a position or a DXCC value is missing;
+     `cty`, else none (release pass: a 2-character locator yields to cty.dat inside its field). cty.dat is consulted only when a position or a DXCC value is missing;
      it fills each missing value (`dxcc` = `CtyMatch.dxcc`, `country` = `CtyMatch.dxcc_name`,
      `cont`, `cq_zone`, `itu_zone` with the per-entry overrides, `lat`/`lon`).
   9. `country` for a WAE-only entity is the DXCC entity name (`IT9XYZ` -> `Italy`, DXCC 248),
@@ -86,7 +88,8 @@ Files that may be created or changed:
      cty.csv codes would count Sicily and Italy as two entities. Documented in the module
      docstring and tested (`wsjtx_log.adi` 1, `n1mm.adi` 3).
   10. Origin: `MY_LAT`/`MY_LON` > `MY_GRIDSQUARE` > station locator > none; distance and
-      bearing with `geo.distance_km` / `geo.bearing_deg` from the origin.
+      bearing with `geo.distance_km` / `geo.bearing_deg` from the origin (release pass: a
+      coarser `MY_GRIDSQUARE` is refined to the station locator).
   11. `adif_extra` = `json.dumps({fields without a column}, ensure_ascii=False, sort_keys=True)`,
       empty values of those fields included (`<APP_N1MM_EXCHANGE1:0>`, `<email:0>`), `"{}"` when
       none. The 16 fields with a column are never repeated there.
@@ -153,9 +156,8 @@ Files that may be created or changed:
   WSJT-X live QSOs) belong to the tasks that call it.
 
 ## Notes
-- `CHANGELOG.md` does not exist and is outside this task's scope. Suggested line under
-  `## Unreleased`: "QSO normalization: ADIF record -> QSO row with dedup key, position from
-  LAT/LON, locator or cty.dat, DXCC data, distance and bearing (M2-02)."
+- `CHANGELOG.md` did not exist yet and was outside this task's scope; the orchestrator has
+  since written the entry ("QSO normalization", under `## [Unreleased]`).
 - `tests/fixtures/cty/README.md` says the excerpt is used only by `tests/core/test_cty.py`; it is
   now also used by `tests/core/test_qso.py` (README not in this task's scope).
 - Contract requests for the orchestrator (not made here):
@@ -173,3 +175,29 @@ Files that may be created or changed:
      `record_to_qso`, record numbering), so callers can rely on them.
 - Observation, not a bug: `adif.parse_latlon("E044 48.750")` returns 44.81; the parser cannot
   know the field, so `qso.py` checks the hemisphere letter itself.
+- **Release pass (2026-10-01)**, three rule changes (core fixer; contract updated in
+  docs/ARCHITECTURE.md, sections "core/modes.py" and "core/qso.py"):
+  1. **Duplicate key mode:** `modes.dedup_mode(mode, submode)` replaces `display_mode` in
+     the key. For an ADIF 3.1.7 mode whose submodes are only variants of it (SSB, PSK,
+     JT65, JT9, JT4, CW, RTTY, OLIVIA, ...) the key holds the family of `MODE` (else of
+     `SUBMODE`): `MODE=SSB`, `MODE=SSB SUBMODE=USB` and the older `MODE=USB` are one QSO,
+     as are `PSK31` / `PSK` and `JT65B` / `JT65`. MFSK and DIGITALVOICE keep the submode
+     (`FT4`, `C4FM`); every other mode keeps `display_mode`. Found by the reviewer: a
+     DXKeeper export (`SSB` + `USB`) and a LoTW download (`SSB`) of the same two QSOs
+     gave four rows. `display_mode` still names the mode in statistics, panel and paths.
+  2. **2-character `GRIDSQUARE`:** a whole 20 x 10 degree field yields to the cty.dat
+     position when that lies inside the field; otherwise the field centre is used, with
+     the new warning "locator {value} in GRIDSQUARE is only a Maidenhead field ...".
+  3. **Coarse `MY_GRIDSQUARE`:** without `MY_LAT`/`MY_LON`, a `MY_GRIDSQUARE` that is a
+     strict prefix of a valid station locator (`KN04` with `KN04ft`, as WSJT-X writes its
+     "My Grid") is replaced by the station locator for the origin and for
+     `my_gridsquare`; a finer locator or another cell is kept as logged.
+  New tests: `tests/core/test_modes.py` (158 tests: every ADIF submode family, umbrella
+  modes, case, blanks, non-text values) and 14 more test functions in
+  `tests/core/test_qso.py` (209 tests in all). Core suite: 3453 passed, 7 xfailed after
+  the core fixes (3472 passed, 7 xfailed with the packaging tests of the release pass).
+- Still open (`qgis_io`, not this module): `gpkg.recalculate` keeps a stored `grid` point
+  from a 2-character `GRIDSQUARE` even when cty.dat, downloaded later, has a position
+  inside that field (`_replaces` ranks `grid` above `cty`), so a file imported without
+  cty.dat keeps the field centre (9A2XYZ `JN`: 823 km) after *Recalculate*; a new import
+  places such QSOs correctly.

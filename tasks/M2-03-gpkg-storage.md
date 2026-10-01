@@ -179,7 +179,46 @@ Re-importing 10 000 duplicates: 0.02 s. Live QSOs during a worker import: 16 ms 
     QSOs"). Before a long write, `prepareAlgorithm` (main thread) can warn when
     `layers.matching_layers(path)` has a layer in edit mode.
 - **PLAN.md / ARCHITECTURE.md** (not edited, outside scope): the schema gained `hamq_meta`
-  and two indexes (version 1); see contract_change_requests in the report.
+  and two indexes (version 1); see contract_change_requests in the report. Both documents
+  describe it now (schema 2 since the release pass, see below).
 - **CHANGELOG.md** (not edited): "GeoPackage QSO log: schema with version, deduplicated
   inserts, geodesic paths split at the antimeridian, recalculation for a new QTH or
   cty.dat, HamQ layer group with translated names and aliases (M2-03, M3-02)."
+- **Release pass (2026-10-01)** (storage fixer; PLAN.md data model and docs/ARCHITECTURE.md
+  "Contract changes" updated):
+  - **Schema 2:** the trigger `qso_delete_paths` (`AFTER DELETE ON qso`) deletes the paths
+    of a deleted QSO, whichever program deletes it (before, a QSO deleted in QGIS left its
+    line on the map, and a re-import drew it twice). `ensure_gpkg` adds the trigger to a
+    schema 1 file and migrates it: paths whose QSO no longer exists are deleted; a line
+    with `qso_fid` NULL (drawn by hand) stays. Edge case (checked on QGIS 4.2.1 with
+    GDAL's `DeleteLayer`): when the user deletes the `qso_path` layer from the file
+    (QGIS Browser, ogr2ogr), the trigger still names it, so deleting a QSO fails with
+    "no such table: main.qso_path" until HamQ next prepares the file (`ensure_gpkg` at an
+    import, a recalculation or a live / manual QSO recreates the empty table); after that
+    deletes work again and *Recalculate* draws the paths again.
+  - **Read-only files and folders:** `insert_qsos` / `recalculate` raise `GpkgError` with
+    what to check (file permissions, folder permissions, another GeoPackage in the HamQ
+    settings) before anything is written, and map `SQLITE_READONLY` / `SQLITE_CANTOPEN`
+    at the first refused write to the same message; the import, the recalculation and
+    live / manual QSOs fail with it instead of reporting "0 imported". A read-only file
+    that only lacks indexes, the trigger or the newest version is shown as it is (one
+    info message).
+  - **Station-grid mark:** *Import ADIF* adds `APP_HAMQ_STATION_GRID` = `Y`
+    (`gpkg.STATION_GRID_KEY`) to `adif_extra` when the record has no `MY_GRIDSQUARE` and
+    my locator was used. `recalculate` (without `force_station`) moves such QSOs to a
+    changed valid locator and stores it as `my_gridsquare`; QSOs with their own
+    `MY_GRIDSQUARE` keep it. `recalculate` also stores the `my_gridsquare` the core now
+    refines (`KN04` -> `KN04ft`), so the column always names the locator the origin comes
+    from. Live WSJT-X QSOs and manual QSOs get no mark: they keep the locator of the
+    moment they were logged (a design choice; `core/qso.py` could add the mark if they
+    should follow a changed locator too).
+  - `layers.connect_events()` also emits `events().dataChanged(path)` after a saved edit
+    session of a `qso` / `qso_path` layer, so deleted QSOs leave the map and the
+    statistics at once.
+  - Tests: `tests/qgis/test_gpkg.py` gained 9 tests (schema upgrade, delete trigger,
+    read-only file / folder / refused write, translated messages, the station-grid mark,
+    my_gridsquare and origin together).
+  - Still open: a stored `grid` point from a 2-character `GRIDSQUARE` is not replaced by
+    a cty.dat position inside that field on *Recalculate* (`_replaces` ranks `grid` above
+    `cty`), so a log imported without cty.dat keeps the 20 x 10 degree field centre after
+    cty.dat is downloaded (see M2-02 Notes).

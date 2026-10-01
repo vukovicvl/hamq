@@ -120,7 +120,16 @@ ruff check / ruff format --check                     -> clean
   self.add_cleanup(self.azimuthal.cleanup)   # restores the CRS on unload
   ```
   ("Azimuthal map" then belongs in `plugin.json`.)
-- Known limitation (not verified in QGIS desktop): the helper is a temporary memory
-  layer, so its features are not saved with a project. If the project is saved while the
-  map is on, it keeps the azimuthal CRS and the (then empty) helper layer. On reopening,
-  the map is not "on"; the user sets the CRS back and removes the layer by hand.
+- ~~Known limitation~~ (resolved in the release pass, see below): the helper is a
+  temporary memory layer, so its features are not saved with a project. If the project
+  was saved while the map was on, it kept the azimuthal CRS and the (then empty) helper
+  layer; on reopening the map was not "on" and the user had to set the CRS back and
+  remove the layer by hand.
+- **Release pass (2026-10-01)** (GUI fixer): the helper layer carries the map's state in
+  the custom property `STATE_PROPERTY` (`hamq/azimuthal`, JSON: centre locator, the CRS
+  and view to restore) and `SKIP_MEMORY_CHECK`, so QGIS no longer asks about the
+  temporary layer when it closes or opens another project. A project saved with the map
+  on opens with it on again (`readProject`), and switching it off restores the original
+  CRS and view. Remaining edge: a project opened while HamQ was not loaded shows the
+  empty helper layer until it is opened again with HamQ. Tests:
+  `tests/qgis/test_azimuthal.py` (saved project round trip, no memory-layer prompt).

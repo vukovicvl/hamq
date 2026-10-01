@@ -416,6 +416,9 @@ TOOLBUTTON_TEXT_BESIDE_ICON = _resolve(
 USER_ROLE = _resolve("USER_ROLE", (Qt, "ItemDataRole", "UserRole"))
 #: ``QLabel.setTextFormat``: rich text.
 TEXT_RICH = _resolve("TEXT_RICH", (Qt, "TextFormat", "RichText"))
+#: ``QLabel.setTextFormat``: plain text, for text from logs, files or the network (the
+#: default ``AutoText`` renders markup such as ``<b>`` in a callsign).
+TEXT_PLAIN = _resolve("TEXT_PLAIN", (Qt, "TextFormat", "PlainText"))
 #: ``QLabel.setTextInteractionFlags``: selectable text and clickable links.
 TEXT_BROWSER_INTERACTION = _resolve(
     "TEXT_BROWSER_INTERACTION", (Qt, "TextInteractionFlag", "TextBrowserInteraction")
@@ -559,6 +562,48 @@ NETIF_CAN_MULTICAST = _resolve(
 
 
 # ---------------------------------------------------------------------------
+# Release pass (net): connection errors in plain words (Hamlib clients, cty.dat
+# download) and the address the WSJT-X listener binds
+# ---------------------------------------------------------------------------
+
+#: ``QAbstractSocket.error()``: nothing accepts connections on that port.
+SOCKET_ERROR_CONNECTION_REFUSED = _resolve(
+    "SOCKET_ERROR_CONNECTION_REFUSED", (QAbstractSocket, "SocketError", "ConnectionRefusedError")
+)
+#: ``QAbstractSocket.error()``: the host name could not be resolved.
+SOCKET_ERROR_HOST_NOT_FOUND = _resolve(
+    "SOCKET_ERROR_HOST_NOT_FOUND", (QAbstractSocket, "SocketError", "HostNotFoundError")
+)
+#: ``QAbstractSocket.error()``: an operation (e.g. connecting) timed out.
+SOCKET_ERROR_TIMEOUT = _resolve(
+    "SOCKET_ERROR_TIMEOUT", (QAbstractSocket, "SocketError", "SocketTimeoutError")
+)
+#: ``QAbstractSocket.error()`` after ``bind``: the address is not one of this computer.
+SOCKET_ERROR_ADDRESS_NOT_AVAILABLE = _resolve(
+    "SOCKET_ERROR_ADDRESS_NOT_AVAILABLE",
+    (QAbstractSocket, "SocketError", "SocketAddressNotAvailableError"),
+)
+#: ``QNetworkReply.error()`` values that mean "no connection to the server".
+NET_CONNECTION_REFUSED = _resolve(
+    "NET_CONNECTION_REFUSED", (QNetworkReply, "NetworkError", "ConnectionRefusedError")
+)
+NET_HOST_NOT_FOUND = _resolve(
+    "NET_HOST_NOT_FOUND", (QNetworkReply, "NetworkError", "HostNotFoundError")
+)
+NET_TIMEOUT = _resolve("NET_TIMEOUT", (QNetworkReply, "NetworkError", "TimeoutError"))
+NET_TEMPORARY_NETWORK_FAILURE = _resolve(
+    "NET_TEMPORARY_NETWORK_FAILURE",
+    (QNetworkReply, "NetworkError", "TemporaryNetworkFailureError"),
+)
+NET_NETWORK_SESSION_FAILED = _resolve(
+    "NET_NETWORK_SESSION_FAILED", (QNetworkReply, "NetworkError", "NetworkSessionFailedError")
+)
+NET_UNKNOWN_NETWORK_ERROR = _resolve(
+    "NET_UNKNOWN_NETWORK_ERROR", (QNetworkReply, "NetworkError", "UnknownNetworkError")
+)
+
+
+# ---------------------------------------------------------------------------
 # M6-02 / M0-03 / M3-03: language switch button (hamq/gui/language.py), settings
 # dialog (hamq/gui/settings_dialog.py), azimuthal map labels (hamq/gui/azimuthal.py)
 # ---------------------------------------------------------------------------
@@ -626,3 +671,13 @@ TASK_CANCEL_WITHOUT_PROMPT = _resolve(
 TASK_HIDDEN = _resolve("TASK_HIDDEN", (QgsTask, "Flag", "Hidden"), (QgsTask, "Hidden"))
 #: ``QgsTask`` flag: no operating-system notification when the task ends.
 TASK_SILENT = _resolve("TASK_SILENT", (QgsTask, "Flag", "Silent"), (QgsTask, "Silent"))
+
+
+# ---------------------------------------------------------------------------
+# Release pass: log messages with text from files and the network
+# ---------------------------------------------------------------------------
+
+#: True where the QGIS Log Messages panel renders a message as HTML, with links that open
+#: the browser: QGIS 3.34 to 3.40.6 and 3.42.0 / 3.42.1 (later versions escape plain
+#: messages). There, text from files or the network is escaped before it is logged.
+LOG_PANEL_SHOWS_HTML: bool = QGIS_VERSION_INT < 34007 or 34100 <= QGIS_VERSION_INT < 34202

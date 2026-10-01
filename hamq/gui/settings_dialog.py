@@ -50,8 +50,10 @@ from ..qgis_io.compat import (
     DIALOG_OK,
     FILE_DIALOG_DONT_CONFIRM_OVERWRITE,
     MSG_CRITICAL,
+    TEXT_PLAIN,
 )
 from ..settings import HamQSettings, default_gpkg_path
+from .dock import DecimalSpinBox, format_number
 
 if TYPE_CHECKING:
     from .language import LanguageManager
@@ -173,6 +175,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.tabs)
         layout.addWidget(self.error_label)
         layout.addWidget(self.button_box)
+        # The problems and the cty.dat status repeat typed text and server messages:
+        # no label renders markup (QLabel's default is AutoText).
+        for label in self.findChildren(QLabel):
+            label.setTextFormat(TEXT_PLAIN)
 
     def _build_station_page(self, page: QWidget) -> None:
         self.station_group = QGroupBox(page)
@@ -303,7 +309,8 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
 
     def _azimuth_spin(self, low: float, high: float) -> QDoubleSpinBox:
-        spin = QDoubleSpinBox(self.rot_group)
+        # the HamQ decimal separator; "36.5" and "36,5" are both 36.5 in every language
+        spin = DecimalSpinBox(self.rot_group)
         spin.setRange(low, high)
         spin.setDecimals(1)
         spin.setSingleStep(5.0)
@@ -398,6 +405,8 @@ class SettingsDialog(QDialog):
         self.rot_preset_combo.setItemText(len(AZIMUTH_PRESETS), tr(_CUSTOM))
         self.rot_min_label.setText(self.tr("Minimum azimuth"))
         self.rot_max_label.setText(self.tr("Maximum azimuth"))
+        self.rot_min_spin.refresh_text()  # the decimal separator of the new language
+        self.rot_max_spin.refresh_text()
         self.rot_reset_button.setText(
             self.tr("Ask again before turning the antenna from a map click")
         )
@@ -732,7 +741,7 @@ class SettingsDialog(QDialog):
         self.grid_status.setStyleSheet("")
         self.grid_status.setText(
             self.tr("Valid: {locator}, center {lat}°, {lon}°").format(
-                locator=locator, lat=f"{lat:.4f}", lon=f"{lon:.4f}"
+                locator=locator, lat=format_number(lat, 4), lon=format_number(lon, 4)
             )
         )
 

@@ -120,6 +120,7 @@ EXPECTED = {
     "TOOLBUTTON_TEXT_BESIDE_ICON": ({2}, {"ToolButtonStyle"}),
     "USER_ROLE": ({0x100}, {"ItemDataRole"}),
     "TEXT_RICH": ({1}, {"TextFormat"}),
+    "TEXT_PLAIN": ({0}, {"TextFormat"}),  # release pass (gui)
     "TEXT_BROWSER_INTERACTION": ({13}, {"TextInteractionFlag"}),
     "CURSOR_CROSS": ({2}, {"CursorShape"}),
     "CURSOR_WAIT": ({3}, {"CursorShape"}),
@@ -140,6 +141,16 @@ EXPECTED = {
     "NETIF_IS_UP": ({0x1}, {"InterfaceFlag"}),  # M5-02
     "NETIF_IS_LOOPBACK": ({0x8}, {"InterfaceFlag"}),  # M5-02
     "NETIF_CAN_MULTICAST": ({0x20}, {"InterfaceFlag"}),  # M5-02
+    "SOCKET_ERROR_CONNECTION_REFUSED": ({0}, {"SocketError"}),  # release pass (net)
+    "SOCKET_ERROR_HOST_NOT_FOUND": ({2}, {"SocketError"}),  # release pass (net)
+    "SOCKET_ERROR_TIMEOUT": ({5}, {"SocketError"}),  # release pass (net)
+    "SOCKET_ERROR_ADDRESS_NOT_AVAILABLE": ({9}, {"SocketError"}),  # release pass (net)
+    "NET_CONNECTION_REFUSED": ({1}, {"NetworkError"}),  # release pass (net)
+    "NET_HOST_NOT_FOUND": ({3}, {"NetworkError"}),  # release pass (net)
+    "NET_TIMEOUT": ({4}, {"NetworkError"}),  # release pass (net)
+    "NET_TEMPORARY_NETWORK_FAILURE": ({7}, {"NetworkError"}),  # release pass (net)
+    "NET_NETWORK_SESSION_FAILED": ({8}, {"NetworkError"}),  # release pass (net)
+    "NET_UNKNOWN_NETWORK_ERROR": ({99}, {"NetworkError"}),  # release pass (net)
     "TOOLBUTTON_MENU_BUTTON_POPUP": ({1}, {"ToolButtonPopupMode"}),  # M6-02
     "LABEL_PLACEMENT_LINE": ({2}, {"LabelPlacement"}),  # M3-03
     "FILE_DIALOG_DONT_CONFIRM_OVERWRITE": ({0x4}, {"Option"}),  # M0-03
@@ -492,6 +503,10 @@ def test_label_alignment_and_text(qgis_app):
     assert label.alignment() & compat.ALIGN_TOP
     label.setTextFormat(compat.TEXT_RICH)
     assert label.textFormat() == compat.TEXT_RICH
+    label.setTextFormat(compat.TEXT_PLAIN)
+    assert label.textFormat() == compat.TEXT_PLAIN
+    label.setText("<b>YU1AB</b>")
+    assert label.text() == "<b>YU1AB</b>"
     label.setTextInteractionFlags(compat.TEXT_BROWSER_INTERACTION)
     assert label.textInteractionFlags() == compat.TEXT_BROWSER_INTERACTION
 
@@ -622,6 +637,82 @@ def test_network_interface_flags(qgis_app):
         )
 
 
+# --- Release pass (net): connection errors in plain words, WSJT-X bind address ----------
+
+
+def _closed_tcp_port() -> int:
+    import socket
+
+    with socket.socket() as probe:  # bound, never listening: connections are refused
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _socket_error(host: str, port: int, qgis_app) -> object:
+    import time
+
+    from qgis.PyQt.QtNetwork import QNetworkProxy, QTcpSocket
+
+    client = QTcpSocket()
+    client.setProxy(QNetworkProxy(compat.NET_PROXY_NONE))
+    errors = []
+    client.errorOccurred.connect(errors.append)
+    client.connectToHost(host, port)
+    deadline = time.monotonic() + 10
+    while not errors and time.monotonic() < deadline:
+        qgis_app.processEvents()
+        time.sleep(0.002)
+    client.abort()
+    return errors[0] if errors else None
+
+
+def test_socket_connection_errors(qgis_app):
+    from qgis.PyQt.QtNetwork import QTcpServer, QTcpSocket
+
+    refused = _socket_error("127.0.0.1", _closed_tcp_port(), qgis_app)
+    assert refused == compat.SOCKET_ERROR_CONNECTION_REFUSED
+    assert _socket_error("nonexistent-host.invalid", 4532, qgis_app) == (
+        compat.SOCKET_ERROR_HOST_NOT_FOUND
+    )
+    server = QTcpServer()
+    assert server.listen(QHostAddress(compat.HOST_LOCALHOST), 0)
+    client = QTcpSocket()
+    client.connectToHost("127.0.0.1", server.serverPort())
+    assert client.waitForConnected(5000)
+    assert not client.waitForReadyRead(1)  # nothing to read
+    assert client.error() == compat.SOCKET_ERROR_TIMEOUT
+    client.abort()
+    server.close()
+
+
+def test_bind_to_an_address_of_another_computer(qgis_app):
+    socket = QUdpSocket()
+    assert not socket.bind(QHostAddress("192.0.2.1"), 0)  # TEST-NET-1, never local
+    assert socket.error() == compat.SOCKET_ERROR_ADDRESS_NOT_AVAILABLE
+
+
+def test_network_reply_connection_errors(qgis_app):
+    import time
+
+    from qgis.core import QgsNetworkAccessManager
+    from qgis.PyQt.QtCore import QUrl
+
+    def error_of(url: str) -> object:
+        reply = QgsNetworkAccessManager.instance().get(QNetworkRequest(QUrl(url)))
+        deadline = time.monotonic() + 10
+        while not reply.isFinished() and time.monotonic() < deadline:
+            qgis_app.processEvents()
+            time.sleep(0.002)
+        error = reply.error()
+        reply.deleteLater()
+        return error
+
+    assert error_of(f"http://127.0.0.1:{_closed_tcp_port()}/cty.dat") == (
+        compat.NET_CONNECTION_REFUSED
+    )
+    assert error_of("http://nonexistent-host.invalid/cty.dat") == compat.NET_HOST_NOT_FOUND
+
+
 # --- M6-02 / M0-03 / M3-03: language button, settings dialog, azimuthal labels ------
 
 
@@ -719,3 +810,25 @@ def test_task_flags_combine():
     assert task.canCancel()
     for name in ("TASK_CANCEL_WITHOUT_PROMPT", "TASK_HIDDEN", "TASK_SILENT"):
         assert task.flags() & getattr(compat, name)
+
+
+# --- Release pass: log messages with text from files and the network ----------------------
+
+
+def test_log_panel_shows_html_matches_the_log_panel(qgis_app):
+    from qgis.core import QgsMessageLog
+    from qgis.PyQt.QtWidgets import QPlainTextEdit, QTextEdit
+
+    gui = pytest.importorskip("qgis.gui", reason="qgis.gui is not available in this build")
+    viewer = gui.QgsMessageLogViewer()  # the Log Messages panel
+    try:
+        QgsMessageLog.logMessage("<b>HamQ</b> &amp; log", "HamQCompatTest", compat.MSG_INFO)
+        views = viewer.findChildren(QPlainTextEdit) + viewer.findChildren(QTextEdit)
+        shown = "\n".join(view.toPlainText() for view in views)
+    finally:
+        viewer.deleteLater()
+    if compat.LOG_PANEL_SHOWS_HTML:
+        assert "HamQ & log" in shown
+        assert "<b>" not in shown
+    else:
+        assert "<b>HamQ</b> &amp; log" in shown

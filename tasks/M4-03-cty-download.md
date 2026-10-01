@@ -93,7 +93,10 @@ as specified in `docs/ARCHITECTURE.md` under "net". cty.dat is never bundled.
   translated):
   - `<file>: the server answered with HTTP status 404`
   - `<file>: unexpected HTTP status <n>`
-  - `<file>: <Qt error string>` (connection refused, DNS, TLS, ...)
+  - `<file>: <Qt error string>` (TLS and other errors)
+  - release pass: `the server <host> cannot be reached; check the internet connection or
+    try again later` for host not found, connection refused, timeout and the other
+    "no connection" errors; Qt's English text goes to the HamQ log at Info level
   - `no data from the server for 30 s`
   - `a file is larger than 8 MB`
   - `the downloaded cty.dat is not valid (entities: N, at least 300 expected)`
@@ -180,3 +183,13 @@ as specified in `docs/ARCHITECTURE.md` under "net". cty.dat is never bundled.
   writing and replacing.
 - `test_cty_files_are_not_bundled` fails if `cty.dat`, `cty.csv` or a `.part` file ever
   lands inside the `hamq/` package.
+- **Release pass (2026-10-01)** (net fixer): an offline download used to end in Qt's
+  English text ("Host country-files.com not found"). The reply errors that mean "no
+  connection" (`compat.NET_HOST_NOT_FOUND`, `NET_CONNECTION_REFUSED`, `NET_TIMEOUT`,
+  `NET_TEMPORARY_NETWORK_FAILURE`, `NET_NETWORK_SESSION_FAILED`,
+  `NET_UNKNOWN_NETWORK_ERROR`) now give the translated "the server {host} cannot be
+  reached; check the internet connection or try again later", and the Qt text is logged
+  at Info. Serbian wording of "no data from the server for {seconds} s": "server {seconds}
+  s nije poslao nikakve podatke". Still open (net): server and HTTP error texts are logged
+  unescaped, which the Log Messages panel of QGIS 3.34 to 3.40.6 and 3.42.0 / 3.42.1
+  renders as HTML (`compat.LOG_PANEL_SHOWS_HTML`).

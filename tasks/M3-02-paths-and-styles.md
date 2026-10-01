@@ -43,7 +43,8 @@ palette, and the Maidenhead grid with locator labels where they fit. Ship the st
       `@map_scale`); loads `resources/styles/<kind>.qml` (Symbology | Labeling only), else
       builds in code; wrong kind / geometry type → `ValueError`
 - [x] "Other bands" legend label translated, again on `retranslate_style` (a label the user
-      changed is kept)
+      changed is kept). Release pass: the Layers panel did not show the new label until the
+      layer was redrawn; the style now emits `legendChanged` when a label changes
 - [x] `scripts/make_styles.py` generates the `.qml` files from the code on QGIS 3.34
       (Docker), reproducibly (fixed Qt hash seed, stable UUIDs, no font family);
       `--check` compares
@@ -99,4 +100,13 @@ palette, and the Maidenhead grid with locator labels where they fit. Ship the st
   try to download one).
 - `qso_path.distance_km` / `bearing_deg` are the QSO's spherical values (core.geo, as the
   contract computes them), the line itself is the WGS84 geodesic; the difference is below
-  0.6 % (Beograd-Sydney: 15 679.9 km spherical, 15 676.1 km on WGS84).
+  0.6 % (Beograd-Sydney: 15 679.7 km spherical, 15 676.1 km on WGS84, measured again in
+  the release pass with `QgsDistanceArea`; the largest difference, +0.56 %, is on short
+  north-south paths near the equator). PLAN.md now says so in the data model, so that a
+  QGIS `$length` of a path is not taken for a wrong `distance_km`.
+- **Release pass (2026-10-01):** `styles.apply_default_style` / `retranslate_style`
+  change the category labels in place, which QGIS does not notice, so the Layers panel
+  kept the old "Other bands" text after a language switch (the earlier claim that it
+  follows the switch held only for a redrawn legend). They now emit
+  `layer.legendChanged`, once per layer and only when a label really changed;
+  `tests/qgis/test_styles.py` checks the legend text after a switch.

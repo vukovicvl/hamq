@@ -16,7 +16,8 @@ in code otherwise. The ``.qml`` files are generated from the code by
 ``scripts/make_styles.py`` on the oldest supported QGIS (3.34), so they load on every
 version; only symbology and labels are loaded (field aliases, forms and the like of the
 layer are never touched). The legend label of bands without a colour of their own is
-translated when the style is applied and again by :func:`retranslate_style`.
+translated when the style is applied and again by :func:`retranslate_style`; a legend
+that shows the layer (the Layers panel) is told to read it again.
 
 Band colours
 ------------
@@ -194,7 +195,8 @@ def build_default_style(layer: QgsVectorLayer, kind: str) -> None:
 def retranslate_style(layer: QgsVectorLayer) -> None:
     """Translate the "Other bands" legend label of a HamQ band style again.
 
-    A label the user changed since HamQ set it is left alone.
+    A label the user changed since HamQ set it is left alone. When the label changes, the
+    layer emits ``legendChanged``, so the Layers panel shows the new text at once.
     """
     _translate_other_label(layer, force=False)
 
@@ -247,7 +249,13 @@ def _symbol(kind: str, color: str) -> Any:
 def _translate_other_label(layer: QgsVectorLayer, *, force: bool) -> None:
     """Set the label of the "all other values" category of a band renderer to the
     translation of :data:`OTHER_BANDS_LABEL`; without ``force`` only when it still is the
-    label HamQ set last time."""
+    label HamQ set last time.
+
+    The renderer is changed in place, which QGIS does not notice: a legend (the Layers
+    panel, a layout) keeps showing the labels it read. ``legendChanged`` makes it read them
+    again, once per layer and only when the text really changed (rebuilding the legend of
+    the 16 band categories costs a noticeable moment of GUI time on QGIS 3.x).
+    """
     renderer = layer.renderer()
     if not isinstance(renderer, QgsCategorizedSymbolRenderer):
         return
@@ -256,14 +264,19 @@ def _translate_other_label(layer: QgsVectorLayer, *, force: bool) -> None:
     previous = layer.customProperty(_OTHER_LABEL_PROPERTY)
     previous = previous if isinstance(previous, str) else None
     label = tr(OTHER_BANDS_LABEL)
+    changed = False
     for index, category in enumerate(renderer.categories()):
         value = category.value()
         if not _is_null(value) and value != "":
             continue
         if force or category.label() == previous:
-            renderer.updateCategoryLabel(index, label)
+            if category.label() != label:
+                renderer.updateCategoryLabel(index, label)
+                changed = True
             layer.setCustomProperty(_OTHER_LABEL_PROPERTY, label)
         break
+    if changed:
+        layer.legendChanged.emit()
 
 
 # --- grid --------------------------------------------------------------------------------------
