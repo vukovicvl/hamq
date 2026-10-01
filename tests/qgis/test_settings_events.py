@@ -11,6 +11,7 @@ from qgis.PyQt.QtCore import QCoreApplication, QObject
 
 from hamq import events as events_module
 from hamq import settings as settings_module
+from hamq.core import maidenhead
 from hamq.events import HamQEvents, events
 from hamq.settings import HamQSettings, cty_cache_path, default_gpkg_path, profile_dir
 
@@ -90,12 +91,30 @@ def test_gpkg_path_round_trip(settings, tmp_path):
         ("rot_max_az", "north", 360.0),
         ("rot_min_az", "nan", 0.0),
         ("last_serbian", "en", "sr_Latn"),
+        ("last_serbian", " sr_Cyrl ", "sr_Cyrl"),
+        ("last_serbian", "", "sr_Latn"),
         ("my_call", 12, "12"),
+        ("my_call", " yu1ab ", "YU1AB"),
+        ("my_grid", " kn04FT12ab ", "KN04ft12"),
+        ("language", "", "auto"),
+        ("language", "klingon", "auto"),
+        ("language", " SR-latn ", "sr_Latn"),
+        ("wsjtx_addr", "", "127.0.0.1"),
+        ("wsjtx_addr", "   ", "127.0.0.1"),
+        ("rig_host", "", "127.0.0.1"),
+        ("rot_host", "  ", "127.0.0.1"),
     ],
 )
 def test_stored_values_are_converted_or_defaulted(settings, name, raw, expected):
     QgsSettings().setValue(f"hamq/{name}", raw)
     assert getattr(settings, name) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_empty_stored_gpkg_path_reads_as_default(settings, raw):
+    # e.g. a hand-edited "gpkg_path=" line in the QGIS settings file
+    QgsSettings().setValue("hamq/gpkg_path", raw)
+    assert settings.gpkg_path == default_gpkg_path()
 
 
 @pytest.mark.parametrize(
@@ -107,8 +126,17 @@ def test_stored_values_are_converted_or_defaulted(settings, name, raw, expected)
         ("rig_port", -1),
         ("rig_poll_ms", 0),
         ("last_serbian", "en"),
+        ("last_serbian", ""),
         ("rot_max_az", "north"),
         ("wsjtx_autostart", "maybe"),
+        ("gpkg_path", ""),
+        ("gpkg_path", "   "),
+        ("wsjtx_addr", ""),
+        ("wsjtx_addr", "  "),
+        ("rig_host", ""),
+        ("rot_host", " "),
+        ("language", ""),
+        ("language", "klingon"),
     ],
 )
 def test_invalid_values_are_rejected(settings, name, value):
@@ -116,6 +144,30 @@ def test_invalid_values_are_rejected(settings, name, value):
     with pytest.raises(ValueError):
         setattr(settings, name, value)
     assert getattr(settings, name) == before
+    assert QgsSettings().value(f"hamq/{name}") is None  # nothing was stored
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("auto", "auto"),
+        ("en", "en"),
+        ("sr_Latn", "sr_Latn"),
+        ("sr_Cyrl", "sr_Cyrl"),
+        (" SR_CYRL ", "sr_Cyrl"),
+        ("sr-Latn", "sr_Latn"),
+        ("EN", "en"),
+    ],
+)
+def test_language_is_stored_as_a_canonical_code(settings, value, expected):
+    settings.language = value
+    assert settings.language == expected
+    assert QgsSettings().value("hamq/language") == expected
+
+
+def test_last_serbian_is_stripped(settings):
+    settings.last_serbian = " sr_Cyrl "
+    assert settings.last_serbian == "sr_Cyrl"
 
 
 def test_grid_normalization(settings):
@@ -125,6 +177,13 @@ def test_grid_normalization(settings):
     assert settings.my_grid == "KN04ft45"
     settings.my_grid = " not a grid "
     assert settings.my_grid == "not a grid"
+
+
+@pytest.mark.parametrize("value", ["KN04FT12AB", " kn04ft12ab ", "kn04FT", "jn", "JN94ab"])
+def test_grid_normalization_matches_core(settings, value):
+    """The stored locator is what hamq.core.maidenhead.normalize() gives (10 chars -> 8)."""
+    settings.my_grid = value
+    assert settings.my_grid == maidenhead.normalize(value)
 
 
 def test_profile_dir_is_created_inside_the_qgis_profile(qgis_app):

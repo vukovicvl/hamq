@@ -26,8 +26,10 @@ Only Serbian Latin is stored: ``hamq/i18n/sr_Latn/<package>_<module>.json``, one
 flat JSON object ``{"English source": "Serbian Latin"}`` per source module.
 :func:`load_catalog` merges every ``*.json`` of a folder in file-name order.
 Loading never raises: an unreadable or malformed file is skipped and the problem
-is kept for :func:`load_problems`. Serbian Cyrillic is derived from the Latin
-text by :func:`latin_to_cyrillic` and cached per text.
+is kept for :func:`load_problems` (the module translator's own load keeps its
+problems apart, so it never replaces those of a :func:`load_catalog` call).
+Serbian Cyrillic is derived from the Latin text by :func:`latin_to_cyrillic` and
+cached per text.
 
 The module translator (:func:`get_translator`, used by :func:`tr`) starts in
 English and reads the catalogs lazily, on the first translation into Serbian.
@@ -43,7 +45,8 @@ becomes ``ђ``, ``č ć š ž`` become ``ч ћ ш ж`` and the other letters map
 one. Technical text inside a translation stays in Latin script:
 
 * ``{placeholders}`` (also ``{0}``, ``{count:,}``, ``{{call}}``), ``%s`` /
-  ``%(name)s`` / ``%1`` / ``%n`` arguments, ``<html tags>``, ``&entities;``;
+  ``%(name)s`` / ``%1`` / ``%n`` arguments, ``<html tags>``, ``<!-- comments -->``,
+  ``&entities;``;
 * URLs, e-mail addresses, paths (starting with ``/``, ``~/``, ``./`` or a drive,
   or containing ``\\``), file names and domains (a dot between letters:
   ``cty.dat``, ``www.qrz.com``), identifiers (``my_call``, ``hamq:import_adif``)
@@ -53,17 +56,33 @@ one. Technical text inside a translation stays in Latin script:
   ``HamQ``; Roman numerals like ``XX`` too), with ``q``, ``w``, ``x``, ``y`` or any
   other letter outside the Serbian alphabet (``Linux``, ``Müller``), and the words
   in :data:`PROTECTED_WORDS` (names such as ``Maidenhead`` or ``Hamlib``, unit
-  symbols such as ``km`` or ``MHz``);
-* words joined by ``/`` when one of them is technical (``YU1AB/P``, ``km/h``);
-  plain words stay words (``ulaza/izlaza`` -> ``улаза/излаза``).
+  symbols such as ``km``, ``MHz`` or ``kg``, keys such as ``Ctrl`` or ``Delete``);
+* the unit symbols ``m``, ``s``, ``h`` and ``min`` where they are units: after a
+  number or a value placeholder (``20 m``, ``1,5 h``, ``{seconds} s``, ``%d s``),
+  alone in brackets (``(s)``, ``[min]``) and in units such as ``m/s`` or ``veza/h``.
+  Elsewhere they are Serbian (``s njim`` -> ``с њим``, ``min. azimut`` ->
+  ``мин. азимут``); after a number or a placeholder write the preposition as ``sa``.
+
+Words joined by ``/`` or ``+`` are judged one by one: technical parts and one-letter
+parts next to them stay (``YU1AB/P``, ``km/h``, ``TX/RX``, ``Ctrl+S``) and Serbian
+words are transliterated (``stanica/QTH`` -> ``станица/QTH``, ``Ctrl+klik`` ->
+``Ctrl+клик``, ``ulaza/izlaza`` -> ``улаза/излаза``). Single letters joined by ``+``
+are a formula (``a+b``) and a lowercase token with a technical part and two or more
+``/`` is a relative path (``python/plugins/hamq``): both stay whole.
 
 Everything else is transliterated, including capitalized words (``Veza`` ->
 ``Веза``). In a compound joined by hyphens or ``&``, capitalized parts next to a
 technical part belong to the name (``Latin-1``, ``Wi-Fi``) and lowercase parts are
 Serbian case endings or words (``QGIS-u`` -> ``QGIS-у``, ``WSJT-X-a`` ->
-``WSJT-X-а``, ``QSO-veza`` -> ``QSO-веза``). Write case endings of protected
-names after a hyphen (``Hamlib-a``); glued to the name (``Hamliba``) the whole
-word is transliterated.
+``WSJT-X-а``, ``QSO-veza`` -> ``QSO-веза``). A case ending after a file name,
+identifier or other technical token is Serbian too (``cty.dat-a`` -> ``cty.dat-а``,
+``my_call-u`` -> ``my_call-у``): lowercase letters after the last hyphen that start
+with a vowel or with ``j`` and a vowel, so ``hamq.gpkg-shm`` and ``python:3.9-slim``
+stay whole. Write case endings of protected names after a hyphen (``Hamlib-a``);
+glued to the name (``Hamliba``) the whole word is transliterated.
+
+Converting a converted text changes nothing, and the time is linear in the length
+of the text.
 
 Known limitations (out of scope, they need a dictionary):
 
@@ -71,7 +90,11 @@ Known limitations (out of scope, they need a dictionary):
   ``nadživeti`` -> ``наџивети`` (correct: ``надживети``), likewise ``podžupan``,
   ``injekcija`` and ``konjunkcija`` (correct: ``инјекција``, ``конјункција``);
 * an all-capitals word without ``č ć đ š ž`` counts as an acronym and stays in
-  Latin (``UPOZORENJE``); ``GREŠKA`` is transliterated. Write words in normal case.
+  Latin (``UPOZORENJE``); ``GREŠKA`` is transliterated. Write words in normal case;
+* a relative path without a technical part or with a single ``/`` is read as
+  words (``profil/podaci``); pass paths as placeholders (``{path}``);
+* a vowel-initial word after a hyphen that follows a technical token is taken for a
+  case ending (``v0.1.0-alfa`` -> ``v0.1.0-алфа``).
 """
 
 from __future__ import annotations
@@ -81,7 +104,7 @@ import os
 import re
 import threading
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 
 __all__ = [
     "LANGUAGES",
@@ -156,7 +179,9 @@ def _serbian_from_locale(locale_name: object) -> str | None:
     """Serbian language code for a locale name, ``None`` when it is not Serbian.
 
     Accepts POSIX (``sr_RS.UTF-8@latin``), BCP 47 (``sr-Latn-RS``), Qt
-    (``sr_Latn_RS``) and Windows (``Serbian (Latin)_Serbia.1250``) spellings.
+    (``sr_Latn_RS``) and Windows (``Serbian (Latin)_Serbia.1250``) spellings. BCP 47
+    extensions and private use subtags (``sr-RS-u-nu-latn``: Latin digits only) are
+    ignored.
     """
     if not isinstance(locale_name, str):
         return None
@@ -173,6 +198,8 @@ def _serbian_from_locale(locale_name: object) -> str | None:
     script = ""
     territory = ""
     for subtag in subtags[1:]:
+        if len(subtag) == 1:  # a singleton (-u-, -t-, -x-) starts extensions / private use
+            break
         if len(subtag) == 4 and subtag.isalpha() and not script:
             script = subtag.casefold()
         elif len(subtag) == 2 and subtag.isalpha() and not territory:
@@ -242,7 +269,8 @@ def _coerce_language(language: object) -> str:
 
 #: Words kept in Latin script although nothing else marks them as technical: names
 #: of programs and people written like ordinary words, unit symbols (SI symbols stay
-#: Latin in Cyrillic text), keyboard keys and network terms. Compared ignoring case.
+#: Latin in Cyrillic text; ``m``, ``s``, ``h`` and ``min`` depend on the context, see
+#: the module documentation), keyboard keys and network terms. Compared ignoring case.
 PROTECTED_WORDS: frozenset[str] = frozenset(
     {
         # programs, libraries and frameworks
@@ -268,7 +296,10 @@ PROTECTED_WORDS: frozenset[str] = frozenset(
         "kHz",
         "MHz",
         "GHz",
+        "mm",
+        "cm",
         "km",
+        "kg",
         "dB",
         "dBm",
         "dBi",
@@ -281,7 +312,16 @@ PROTECTED_WORDS: frozenset[str] = frozenset(
         "Shift",
         "Alt",
         "Enter",
+        "Return",
         "Esc",
+        "Tab",
+        "Space",
+        "Backspace",
+        "Delete",
+        "Del",
+        "Insert",
+        "Home",
+        "End",
         # network terms
         "localhost",
         "multicast",
@@ -353,28 +393,32 @@ _SERBIAN_SPECIAL = frozenset(
 )
 _HAS_LATIN_RE = re.compile("[A-Za-z" + "".join(sorted(_SERBIAN_SPECIAL)) + "]")
 
-# Spans copied unchanged, even when glued to words.
+# Spans copied unchanged, even when glued to words. An HTML comment is matched by its
+# opening "<!--" only and its end is found with str.find: a pattern for the whole comment
+# would rescan the rest of the text for every unclosed "<!--" (quadratic time).
 _SPAN_RE = re.compile(
     r"""
-      (?:[A-Za-z][A-Za-z0-9+.\-]{0,20}://|www\.)[^\s<>"'`]*  # URL (short scheme: no backtracking)
-    | <!--.*?-->                                            # HTML comment
-    | </?[A-Za-z][^<>]*>                                    # HTML / XML tag
-    | &(?:[A-Za-z][A-Za-z0-9]*|\#[0-9]+|\#[xX][0-9A-Fa-f]+);  # entity
-    | \{\{[^{}\s]*\}\}                                      # {{call}}: a field shown as text
-    | \{\{ | \}\}                                           # escaped brace (str.format)
-    | \{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}                       # str.format field
-    | %(?:\([^()]*\))?[-+\#0]*(?:[0-9]+|\*)?(?:\.(?:[0-9]+|\*))?[sdifFeEgGxXocru%]  # printf
-    | %L?[0-9]+ | %n                                        # Qt arguments
+      (?P<url>(?:[A-Za-z][A-Za-z0-9+.\-]{0,20}://|www\.)[^\s<>"'`]*)  # URL (short scheme)
+    | (?P<comment><!--)                                     # HTML comment
+    | (?P<tag></?[A-Za-z][^<>]*>)                           # HTML / XML tag
+    | (?P<entity>&(?:[A-Za-z][A-Za-z0-9]*|\#[0-9]+|\#[xX][0-9A-Fa-f]+);)
+    | (?P<text>\{\{[^{}\s]*\}\} | \{\{ | \}\})              # {{call}} shown as text, {{ and }}
+    | (?P<field>\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})            # str.format field
+    | (?P<printf>%(?:\([^()]*\))?[-+\#0]*(?:[0-9]+|\*)?(?:\.(?:[0-9]+|\*))?[sdifFeEgGxXocru%])
+    | (?P<qt>%L?[0-9]+ | %n)                                # Qt arguments
     """,
-    re.VERBOSE | re.DOTALL,
+    re.VERBOSE,
 )
+# Spans that stand for a value, such as a number: a unit symbol may follow them.
+_VALUE_SPANS = frozenset({"field", "printf", "qt"})
 _SPACE_SPLIT_RE = re.compile(r"(\s+)")
 # A chunk that is a path or a command-line argument: /usr, ~/x, ./x, C:\x, -m, --port, +f
 _PATH_START_RE = re.compile(r"[~.]*[/\\]|[A-Za-z]:[/\\]")
 _OPTION_START_RE = re.compile(r"(?:\+|--?)[^\W_]")
 _OPENING_PUNCTUATION = "([{\"'„“”«»‘’‚"
 # Characters that never occur inside an ordinary word (identifiers, formulas, markup).
-_TECHNICAL_CHARS = frozenset("_=#|*^$~+<>@\\")
+# '+' is judged separately: Ctrl+klik has a Serbian word, a+b is a formula.
+_TECHNICAL_CHARS = frozenset("_=#|*^$~<>@\\")
 # A dot or colon between letters or digits: file names, domains, versions, EPSG:4326.
 _JOINED_RE = re.compile(r"[^\W_][.:][^\W_]")
 _WORD_RE = re.compile(r"[^\W_]+")
@@ -382,6 +426,29 @@ _WORD_RE = re.compile(r"[^\W_]+")
 _JOINERS = re.escape("-\u2010\u2011\u2013\u2014&'\u2019")  # hyphens, dashes, &, apostrophes
 _COMPOUND_RE = re.compile(r"[^\W_]+(?:[" + _JOINERS + r"]+[^\W_]+)*")
 _JOINER_SPLIT_RE = re.compile("([" + _JOINERS + "]+)")
+# Words joined by '/' or '+': km/h, YU1AB/P, ulaza/izlaza, Ctrl+klik.
+_SLASH_PLUS_SPLIT_RE = re.compile("([/+])")
+# A Serbian case ending after a hyphen: lowercase Serbian letters that start with a vowel
+# or with j and a vowel (-a, -u, -om, -ima, -ova, -ja, -jem). Technical tails such as
+# -shm, -slim, -dev or -wal do not match. Cyrillic endings match too, so that converting
+# a converted text changes nothing.
+_HYPHENS = "-\u2010\u2011"
+_SERBIAN_LOWER = "".join(
+    sorted(
+        {letter for letter in _LETTERS if letter.islower()}
+        | {letter for letter in _LETTERS.values() if letter.islower()}
+        | {letter for letter in _DIGRAPHS.values() if letter.islower()}
+    )
+)
+_ENDING_RE = re.compile(
+    "(?:[aeiou\u0430\u0435\u0438\u043e\u0443]|[j\u0458][aeiou\u0430\u0435\u0438\u043e\u0443])"
+    "[" + _SERBIAN_LOWER + "]*"
+)
+# Unit symbols that are also Serbian words or letters (s is a preposition). They stay in
+# Latin only where they are units: after a number or a value placeholder, alone in
+# brackets or in a unit such as m/s. Other unit symbols are in PROTECTED_WORDS.
+_CONTEXT_UNITS = frozenset({"m", "s", "h", "min"})
+_NUMBER_RE = re.compile("[-+\u2212\u00b1]?[0-9]+(?:[.,][0-9]+)*")
 
 
 def _is_word_char(char: str) -> bool:
@@ -424,21 +491,89 @@ def _convert_compound(match: re.Match[str]) -> str:
     return "".join(parts)
 
 
+def _is_technical(text: str) -> bool:
+    """True for a token kept whole: identifiers, markup, file names, domains, versions."""
+    return any(char in _TECHNICAL_CHARS for char in text) or _JOINED_RE.search(text) is not None
+
+
+def _split_ending(core: str) -> tuple[str, str, str] | None:
+    """Split a Serbian case ending off a technical token: 'cty.dat-a' -> ('cty.dat', '-', 'a').
+
+    ``None`` when ``core`` does not end in a hyphen and a case ending, or when the part
+    before it is an ordinary word or compound (the compound rule handles ``QGIS-u``).
+    """
+    index = max(core.rfind(hyphen) for hyphen in _HYPHENS)
+    if index <= 0 or not _is_word_char(core[index - 1]):
+        return None
+    ending = unicodedata.normalize("NFC", core[index + 1 :])
+    if not _ENDING_RE.fullmatch(ending):
+        return None
+    stem = unicodedata.normalize("NFC", core[:index])
+    if _is_technical(stem) or "/" in stem or "+" in stem:
+        return core[:index], core[index], ending
+    return None
+
+
+def _is_unit_or_technical(word: str) -> bool:
+    return word in _CONTEXT_UNITS or (
+        _WORD_RE.fullmatch(word) is not None and _is_protected_piece(word)
+    )
+
+
+def _convert_slash_plus(text: str) -> str:
+    """Convert words joined by '/' or '+', one by one.
+
+    Technical parts, one-letter parts next to them and units after '/' stay (YU1AB/P,
+    km/h, m/s, TX/RX, Ctrl+S, veza/h); Serbian words are transliterated (stanica/QTH,
+    Ctrl+klik, ulaza/izlaza). Single letters joined by '+' are a formula (a+b) and a
+    lowercase token with a technical part and two or more '/' is a relative path
+    (python/plugins/hamq): both stay whole.
+    """
+    parts = _SLASH_PLUS_SPLIT_RE.split(text)
+    words = parts[0::2]
+    if all(_is_unit_or_technical(word) for word in words):
+        return text
+    technical = any(
+        _is_protected_piece(piece) for word in words for piece in _WORD_RE.findall(word)
+    )
+    if "+" in text:
+        if not technical and all(len(word) <= 1 for word in words):
+            return text
+    elif technical and text.count("/") >= 2 and text == text.lower():
+        return text
+    for index in range(0, len(parts), 2):
+        word = parts[index]
+        if technical and len(word) == 1:
+            continue
+        if index > 0 and parts[index - 1] == "/" and word in _CONTEXT_UNITS:
+            continue
+        parts[index] = _COMPOUND_RE.sub(_convert_compound, word)
+    return "".join(parts)
+
+
 def _convert_core(core: str) -> str:
     """Convert a chunk without its surrounding punctuation; return it unchanged if technical."""
     text = unicodedata.normalize("NFC", core)
     if text.casefold() in _PROTECTED_FOLDED:
         return core
-    if any(char in _TECHNICAL_CHARS for char in text) or _JOINED_RE.search(text):
+    ending = _split_ending(core)
+    if ending is not None:  # cty.dat-a, my_call-u: the token stays, the ending is Serbian
+        stem, hyphen, suffix = ending
+        return _convert_core(stem) + hyphen + _transliterate(suffix)
+    if _is_technical(text):
         return core
-    # YU1AB/P, km/h and TX/RX stay as they are; ulaza/izlaza and da/ne are words.
-    if "/" in text and any(_is_protected_piece(word) for word in _WORD_RE.findall(text)):
-        return core
+    if "/" in text or "+" in text:
+        converted = _convert_slash_plus(text)
+        return core if converted == text else converted
     return _COMPOUND_RE.sub(_convert_compound, text)
 
 
-def _convert_chunk(chunk: str, glued: bool) -> str:
-    """Convert a run of non-space text; ``glued`` when it directly follows a protected span."""
+def _convert_chunk(chunk: str, glued: bool, after_value: bool) -> str:
+    """Convert a run of non-space text.
+
+    ``glued`` when it directly follows a protected span, ``after_value`` when a number or a
+    value placeholder (``{count}``, ``%d``) comes right before it.
+    """
     if not _HAS_LATIN_RE.search(chunk):
         return chunk
     if "@" in chunk or "\\" in chunk or "://" in chunk:
@@ -454,18 +589,45 @@ def _convert_chunk(chunk: str, glued: bool) -> str:
         end -= 1
     if start == end:
         return chunk
-    return chunk[:start] + _convert_core(chunk[start:end]) + chunk[end:]
+    core = chunk[start:end]
+    if core in _CONTEXT_UNITS and (
+        after_value or (chunk[:start].endswith(("(", "[")) and chunk[end:].startswith((")", "]")))
+    ):
+        return chunk  # 5 s, {seconds} s, (m): a unit symbol
+    return chunk[:start] + _convert_core(core) + chunk[end:]
 
 
-def _convert_plain(segment: str, after_span: bool) -> str:
+def _convert_plain(segment: str, after_span: bool, after_value: bool) -> str:
     pieces = _SPACE_SPLIT_RE.split(segment)
     out = []
     for index, piece in enumerate(pieces):
         if not piece or piece.isspace():
             out.append(piece)
-        else:
-            out.append(_convert_chunk(piece, glued=after_span and index == 0))
+            continue
+        out.append(_convert_chunk(piece, after_span and index == 0, after_value))
+        after_value = _NUMBER_RE.fullmatch(piece.lstrip(_OPENING_PUNCTUATION)) is not None
     return "".join(out)
+
+
+def _protected_spans(text: str) -> Iterator[tuple[int, int, bool]]:
+    """``(start, end, is_value)`` of the spans of ``text`` that are copied unchanged."""
+    position = 0
+    comments = True  # False after an unclosed "<!--": no later comment can close either
+    while True:
+        match = _SPAN_RE.search(text, position)
+        if match is None:
+            return
+        start, end = match.span()
+        kind = match.lastgroup
+        if kind == "comment":
+            close = text.find("-->", end) if comments else -1
+            if close < 0:  # not a comment: "<!--" stays in the text
+                comments = False
+                position = end
+                continue
+            end = close + 3
+        yield start, end, kind in _VALUE_SPANS and match.group() != "%%"
+        position = end
 
 
 def latin_to_cyrillic(text: str) -> str:
@@ -474,31 +636,33 @@ def latin_to_cyrillic(text: str) -> str:
     Placeholders, markup, URLs, e-mail addresses, paths, file names and technical
     tokens stay unchanged (see the module documentation for the exact rules and
     the known limitations). ``text`` that is not a ``str`` is returned as it is.
+    Runs in time linear in the length of ``text``.
     """
     if not isinstance(text, str) or not _HAS_LATIN_RE.search(text):
         return text
     out: list[str] = []
     position = 0
-    for match in _SPAN_RE.finditer(text):
-        if match.start() > position:
-            out.append(_convert_plain(text[position : match.start()], after_span=position > 0))
-        out.append(match.group())
-        position = match.end()
+    after_value = False
+    for start, end, value in _protected_spans(text):
+        if start > position:
+            out.append(_convert_plain(text[position:start], position > 0, after_value))
+        out.append(text[start:end])
+        position = end
+        after_value = value
     if position < len(text):
-        out.append(_convert_plain(text[position:], after_span=position > 0))
+        out.append(_convert_plain(text[position:], position > 0, after_value))
     return "".join(out)
 
 
 # --------------------------------------------------------------------------- catalogs
 
-_problems: list[tuple[str, dict[str, str]]] = []
+# Load problems as (English template, parameters), translated only when read. They are
+# kept per source: the latest load_catalog() call (None: no call yet) and the module
+# translator's own lazy load of the plugin catalogs (None: not loaded yet), so that the
+# lazy load, which translating the messages may trigger, never replaces a call's problems.
+_problems: list[tuple[str, dict[str, str]]] | None = None
+_translator_problems: list[tuple[str, dict[str, str]]] | None = None
 _problems_lock = threading.Lock()
-
-
-def _set_problems(problems: list[tuple[str, dict[str, str]]]) -> None:
-    global _problems
-    with _problems_lock:
-        _problems = problems
 
 
 def _format(template: str, params: Mapping[str, str]) -> str:
@@ -509,13 +673,18 @@ def _format(template: str, params: Mapping[str, str]) -> str:
 
 
 def load_problems() -> list[str]:
-    """Problems found by the latest :func:`load_catalog` call, translated now.
+    """Problems found while loading translation catalogs, translated now.
 
-    Each skipped file, skipped entry or conflicting translation gives one message;
-    the list is empty after a clean load. Callers on the QGIS side log them.
+    These are the problems of the latest :func:`load_catalog` call. While no such call
+    was made, they are those of the module translator's own load of
+    ``hamq/i18n/sr_Latn/``, which happens lazily on its first translation into
+    Serbian: the plugin logs them after applying the language. That lazy load never
+    replaces the problems of a :func:`load_catalog` call, so reading the problems (which
+    may trigger it) returns the same list every time. Each skipped file, skipped entry or
+    conflicting translation gives one message; the list is empty after a clean load.
     """
     with _problems_lock:
-        recorded = list(_problems)
+        recorded = list((_problems if _problems is not None else _translator_problems) or ())
     return [_format(template, params) for template, params in recorded]
 
 
@@ -544,31 +713,36 @@ def _read_catalog_file(
     return entries
 
 
-def load_catalog(directory: str | os.PathLike) -> dict[str, str]:
-    """Merge every ``*.json`` catalog of ``directory`` into one ``{source: translation}``.
+def _catalog_file_names(directory: str | os.PathLike) -> list[str]:
+    """Names of the catalog files of ``directory`` in load order.
 
-    Files are read in name order; hidden files and anything that is not a
-    ``.json`` file are ignored. A file that cannot be read, is not valid UTF-8
-    JSON or is not a JSON object is skipped; entries whose value is not text are
-    skipped; empty translations are left out (the English source is shown). When
-    two files translate the same text differently, the later file wins. Nothing
-    raises: problems are recorded for :func:`load_problems`.
+    Regular files ending in ``.json`` in any case, hidden files excluded, sorted by
+    name. The catalog guard test selects its files with this function too. Raises
+    ``OSError``, ``TypeError`` or ``ValueError`` for a missing or invalid directory.
     """
+    folder = os.fspath(directory)
+    return sorted(
+        name
+        for name in os.listdir(folder)
+        if name.lower().endswith(".json")
+        and not name.startswith(".")
+        and os.path.isfile(os.path.join(folder, name))
+    )
+
+
+def _read_catalogs(
+    directory: str | os.PathLike,
+) -> tuple[dict[str, str], list[tuple[str, dict[str, str]]]]:
+    """The merged catalog of ``directory`` and the problems found; never raises."""
     problems: list[tuple[str, dict[str, str]]] = []
     catalog: dict[str, str] = {}
     origin: dict[str, str] = {}
     try:
         folder = os.fspath(directory)
-        names = sorted(
-            name
-            for name in os.listdir(folder)
-            if name.lower().endswith(".json")
-            and not name.startswith(".")
-            and os.path.isfile(os.path.join(folder, name))
-        )
+        names = _catalog_file_names(folder)
     except (OSError, TypeError, ValueError) as exc:
         problems.append((_MSG_FOLDER, {"path": str(directory), "error": str(exc)}))
-        names = []
+        return catalog, problems
     for name in names:
         entries = _read_catalog_file(os.path.join(folder, name), name, problems)
         for key, value in (entries or {}).items():
@@ -579,7 +753,23 @@ def load_catalog(directory: str | os.PathLike) -> dict[str, str]:
                 )
             catalog[key] = value
             origin[key] = name
-    _set_problems(problems)
+    return catalog, problems
+
+
+def load_catalog(directory: str | os.PathLike) -> dict[str, str]:
+    """Merge every ``*.json`` catalog of ``directory`` into one ``{source: translation}``.
+
+    Files are read in name order; hidden files and anything that is not a
+    ``.json`` file (in any case) are ignored. A file that cannot be read, is not
+    valid UTF-8 JSON or is not a JSON object is skipped; entries whose value is not
+    text are skipped; empty translations are left out (the English source is shown).
+    When two files translate the same text differently, the later file wins. Nothing
+    raises: problems are kept for :func:`load_problems`.
+    """
+    global _problems
+    catalog, problems = _read_catalogs(directory)
+    with _problems_lock:
+        _problems = problems
     return catalog
 
 
@@ -670,7 +860,12 @@ _translator_lock = threading.Lock()
 
 
 def _load_plugin_catalog() -> dict[str, str]:
-    return load_catalog(_CATALOG_DIR)
+    """Loader of the module translator; its problems never replace a load_catalog() call's."""
+    global _translator_problems
+    catalog, problems = _read_catalogs(_CATALOG_DIR)
+    with _problems_lock:
+        _translator_problems = problems
+    return catalog
 
 
 def get_translator() -> Translator:

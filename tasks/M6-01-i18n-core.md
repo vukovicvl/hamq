@@ -50,8 +50,23 @@ every translatable string of `hamq/` in the Serbian catalogs.
 - [x] `hamq/i18n/sr_Latn/core_i18n.json` for the six strings of this module
 - [x] Python 3.9 compatible, no `qgis` / `PyQt` imports, ruff clean
 
+Review fix round (2026-09-30), each with a regression test that failed before the fix:
+- [x] should: a case ending after a file name / technical token is Serbian (`cty.dat-a` ->
+      `cty.dat-а`, `hamq.gpkg-u` -> `hamq.gpkg-у`)
+- [x] should: guard rule e catches `QgsApplication.translate`, aliased imports,
+      `<App>.instance().translate`, `qApp`, `QtCore.QT_TRANSLATE_NOOP`
+- [x] nit: `tr(("Yes", "No")[flag])` (an indexed literal container) fails rule a
+- [x] nit: the guard selects catalog files exactly as the runtime loader (shared helper)
+- [x] nit: `load_problems()` never changes what it reports (the lazy load keeps its problems apart)
+- [x] nit: unclosed `<!--` no longer takes quadratic time
+- [x] nit: one unit convention (`m`, `s`, `h`, `min` Latin where they are units; `cm`, `mm`,
+      `kg` and the missing key names protected)
+- [x] nit: Serbian words joined by `/` or `+` to a technical token are transliterated
+- [x] nit: BCP 47 extension / private use subtags are not read as a script
+- [x] nit: stale note about a `w/` folder removed
+
 ## Acceptance criteria
-- [x] `pytest tests/core -q` passes (2314 passed, 4 xfailed)
+- [x] `pytest tests/core -q` passes (2821 passed, 8 xfailed after the fix round)
 - [x] `ruff check` and `ruff format --check` pass on the changed files
 - [x] Task examples hold: `Uvezi ADIF fajl` -> `Увези ADIF фајл`, `Veza {call} na {band}` ->
       `Веза {call} на {band}`, `Preuzmi cty.dat sa https://www.country-files.com` keeps the file
@@ -79,7 +94,8 @@ every translatable string of `hamq/` in the Serbian catalogs.
   `@ijekavianlatin`, `@cyrillic`), then the territory: `sr_ME` is Latin (CLDR; Qt reports
   `QLocale("sr_ME").script() == Latin`), everything else Cyrillic. `sr` and `srp` count as
   Serbian; `sh`, `hr`, `bs` do not.
-- Catalog loading: `*.json` in name order, hidden files and non-files ignored, UTF-8 with
+- Catalog loading: `*.json` (extension in any case) in name order, hidden files and non-files
+  ignored, UTF-8 with
   optional BOM; unreadable / invalid / non-object files skipped; non-text values skipped;
   empty values left out (source shown); conflicting translations: the later file wins.
   Every problem is recorded as (English template, parameters) and translated only when
@@ -91,16 +107,17 @@ every translatable string of `hamq/` in the Serbian catalogs.
   double-checked under a lock; a failing loader gives an empty catalog, never an exception.
 - Transliteration rules are documented in the module docstring. Beyond the task list:
   `{{call}}` (a field shown as text) is kept; `/` between plain words is not a path
-  (`Greška ulaza/izlaza` -> `Грешка улаза/излаза`, found in `core_hamlib.json`), but `/` next to a
-  technical token keeps the whole token (`YU1AB/P`, `km/h`); in hyphen / `&` compounds with a
+  (`Greška ulaza/izlaza` -> `Грешка улаза/излаза`, found in `core_hamlib.json`); words joined
+  by `/` or `+` are judged one by one (fix round, below); in hyphen / `&` compounds with a
   technical part, capitalized parts stay (`Latin-1`, `Wi-Fi`) and lowercase parts are Serbian
   (`QGIS-u` -> `QGIS-у`, `WSJT-X-a` -> `WSJT-X-а`, `QSO-veza` -> `QSO-веза`, `20-ak` -> `20-ак`);
   all-caps words with č ć đ š ž are Serbian (`NJEGOŠ`), without them acronyms; unit symbols
   (`km`, `MHz`, `Hz`, `dB`, `ms`, ...) stay Latin as in Serbian orthography for SI symbols.
-- `tests/core/test_i18n.py`: 308 tests + 4 strict xfail (the documented digraph exceptions
+- `tests/core/test_i18n.py`: 388 tests + 4 strict xfail (the documented digraph exceptions
   `nadživeti`, `podžupan`, `injekcija`, `konjunkcija`). Every test runs with a fresh module
-  translator (monkeypatched) so no language state leaks into other test modules.
-- `tests/core/test_i18n_catalog.py`: the guard (141 tests with the files present now; the
+  translator and no recorded load problems (monkeypatched), so no state leaks into other
+  test modules.
+- `tests/core/test_i18n_catalog.py`: the guard (160 tests with the files present now; the
   number grows with the files). Rules as requested, plus: `tr()` at import time is an error
   (the text would never follow a language switch); `tr_noop()` must get a literal (per the
   architecture rules); exactly one positional argument; `self.tr()` in a class without its own
@@ -111,17 +128,81 @@ every translatable string of `hamq/` in the Serbian catalogs.
 - `hamq/i18n/sr_Latn/core_i18n.json`: `Auto (QGIS language)` -> `Automatski (jezik QGIS-a)`
   and the five catalog-loading messages.
 
+### Review fix round (2026-09-30)
+The reviewer's ten findings were reproduced first (scratch script); for each, a regression
+test was added and seen failing against the unfixed code (48 failures), then fixed:
+- Case endings after technical tokens (should): `_split_ending` splits a trailing hyphen plus
+  a lowercase ending that starts with a vowel or `j` + vowel off a token that has technical
+  characters, a dot/colon join, `/` or `+`; the token is converted on its own (usually kept)
+  and the ending transliterated: `cty.dat-a` -> `cty.dat-а`, `cty.dat-om`, `hamq.gpkg-u`,
+  `my_call-a`, `EPSG:4326-u`, `YU1AB/P-om`. Technical tails stay: `hamq.gpkg-shm`,
+  `hamq.gpkg-wal`, `python:3.9-slim`, `hamq-0.1.0.zip`, `cty.dat-A`. Cyrillic endings are
+  recognized too, so a second conversion changes nothing (a fuzz run found this; tests added).
+- Guard rule e (should): `QgsApplication` added to the application classes; aliases from
+  `from ... import QCoreApplication as QCA` / `QObject as Base` and from assignments
+  (`app = QgsApplication.instance()`); `<App>.instance().translate/.tr`, `qApp.translate`;
+  markers as attributes (`QtCore.QT_TRANSLATE_NOOP`). Nine new scanner self-tests (flagged)
+  and three (allowed: `instance().processingRegistry()`, an aliased `App.locale()`,
+  `app.translate(table)` on an unrelated object).
+- Indexed literal (nit): `tr()` of a subscript must index a name or attribute (a table marked
+  with `tr_noop`); `("Yes", "No")[flag]`, `{...}[key]`, `"Yes"[:2]`, `labels()[key]` fail
+  rule a with a hint. Nested `LABELS[key][i]` and `self.LABELS[key]` stay allowed.
+- Catalog file selection (nit): `i18n._catalog_file_names()` (private) is the one rule
+  (`*.json` in any case, no hidden files, regular files, name order); `load_catalog` and the
+  guard's `catalog_files()` use it. Regression test with `A_UPPER.JSON`, `c.Json`,
+  `.hidden.json`, `notes.txt`, `folder.json/`.
+- `load_problems()` (nit): problems are kept per source: the latest `load_catalog()` call, and
+  the module translator's own lazy load (private `_read_catalogs`, never touches the call's
+  problems). `load_problems()` returns the call's problems, or the translator's while no call
+  was made; reading them (which may trigger the lazy load) returns the same list every time.
+- Unclosed comments (nit): the span pattern matches only `<!--`; the end is found with
+  `str.find`, and after the first unclosed `<!--` no further search is made: 100 KB of
+  `<!--a` 11.6 s -> 0.016 s. A timing test (marker `slow`, 3 s bound for 100 KB) covers 11
+  pathological inputs; all take <= 0.31 s here.
+- Units and keys (nit): one convention, unit symbols stay Latin. `cm`, `mm`, `kg` and the keys
+  `Return`, `Tab`, `Space`, `Backspace`, `Delete`, `Del`, `Insert`, `Home`, `End` were added to
+  `PROTECTED_WORDS`. `m`, `s`, `h`, `min` are also Serbian words or letters (`s` is a
+  preposition, `min.` an abbreviation), so they stay Latin only after a number or a value
+  placeholder (`20 m`, `1,5 h`, `{seconds} s`, `%d s`), alone in brackets (`(s)`, `[min]`) and
+  in units (`m/s`, `veza/h`); elsewhere they are transliterated (`s njim` -> `с њим`,
+  `min. azimut` -> `мин. азимут`).
+- `/` and `+` (nit): parts are judged one by one: technical parts, one-letter parts next to
+  them and units after `/` stay; Serbian words are transliterated (`stanica/QTH` ->
+  `станица/QTH`, `veza/QSO`, `AM/FM/Ostalo` -> `AM/FM/Остало`, `Ctrl+klik` -> `Ctrl+клик`,
+  `Klik+prevuci` -> `Клик+превуци`). Kept whole: `YU1AB/P`, `km/h`, `TX/RX`, `Ctrl+S`,
+  `a+b` (single letters: a formula) and `python/plugins/hamq` (lowercase, a technical part and
+  two or more `/`: a relative path, as before the change).
+- BCP 47 (nit): subtag scanning stops at the first singleton: `sr-RS-u-nu-latn`,
+  `sr-RS-x-latn`, `sr-x-ME` -> `sr_Cyrl`; `sr-Latn-RS-u-nu-latn` -> `sr_Latn`.
+- Task file (nit): the stale note about a `w/` folder was removed.
+- Old vs new transliteration on all 66 current catalog values: no difference. Of 86 probe
+  phrases, 34 differ, all in the classes above (reviewed one by one).
+- Fuzz (3 seeds x 200k random texts from Serbian words, technical tokens, units, placeholders
+  and joiners): never raises, idempotent, `str.format` fields unchanged, worst case < 2 ms.
+  One seed hit a degenerate template whose format spec contains `{{call}}`
+  (`[Ž{Delete; :{{call}}...}`): not usable with `str.format` (ValueError), and the old code
+  changes it as well; left as is (real catalogs are covered by guard rule c).
+
 ### Commands and outcomes
-- `python3 -m pytest -p no:cacheprovider tests/core/test_i18n.py -q` -> 308 passed, 4 xfailed.
-- `python3 -m pytest -p no:cacheprovider tests/core/test_i18n_catalog.py -q` -> 141 passed
+- `python3 -m pytest -p no:cacheprovider tests/core/test_i18n.py -q` -> 388 passed, 4 xfailed.
+- `python3 -m pytest -p no:cacheprovider tests/core/test_i18n_catalog.py -q` -> 160 passed
   (also with `HAMQ_STRICT_I18N=1`: no unused keys at the moment).
-- `python3 -m pytest -p no:cacheprovider tests/core -q` -> 2314 passed, 4 xfailed.
-- Docker `python:3.9-slim` (read-only mount): i18n tests -> 449 passed, 4 xfailed (Python 3.9.25).
-- Docker `qgis/qgis:3.44-trixie` and `qgis/qgis:4.0-trixie`: i18n tests -> 449 passed,
+- `python3 -m pytest -p no:cacheprovider tests/core -q` -> 2821 passed, 8 xfailed.
+- Docker `python:3.9-slim` (read-only mount): i18n tests -> 548 passed, 4 xfailed (Python 3.9.25).
+- Docker `qgis/qgis:3.44-trixie` and `qgis/qgis:4.0-trixie`: i18n tests -> 548 passed,
   4 xfailed each (Python 3.13.5).
-- Docker `camptocamp/qgis-server:3.34` (Python 3.10.12, no pytest): smoke script (resolve,
-  switch, translate `core_i18n` and `core_hamlib` texts, `load_problems() == []`) -> ok.
+- Docker `camptocamp/qgis-server:3.34` (Python 3.10.12, no pytest): smoke script (resolve incl.
+  `sr-RS-u-nu-latn`, switch, translate `core_i18n` and `core_hamlib` texts, `load_problems()`
+  stable across two reads, endings / units / slash / keys, unclosed comments fast) -> ok.
 - `ruff check` and `ruff format --check` on the three Python files -> clean.
+- Guard mutation check after the fix round (scratch copy): an injected `hamq/gui/zz_mut.py`
+  with `QgsApplication.translate`, an aliased `QCA.translate`, `QCA.instance().translate`,
+  `QtCore.QT_TRANSLATE_NOOP` and `tr(("Yes", "No")[flag])`, and an injected `ZZ_UPPER.JSON`
+  (unsorted, Cyrillic value, not canonical, placeholder mismatch) -> each failed under the
+  owning file's test id (`test_no_qt_translation_api`, `test_tr_arguments_are_plain_literals`,
+  `test_catalog_file_is_well_formed`, `test_catalog_placeholders_match`).
+
+Before the fix round:
 - Guard mutation check (scratch copy): an injected GUI module with import-time `tr()`, an
   f-string, a missing text, `QCoreApplication.translate` and `self.tr()` without `tr`, and an
   injected catalog with a duplicate key, unsorted keys, a placeholder mismatch, a conflicting
@@ -148,13 +229,17 @@ every translatable string of `hamq/` in the Serbian catalogs.
     unit symbols, keys, network terms), compared ignoring case. Authors whose Serbian texts
     contain other foreign words written like Serbian words (no capitals, digits or q w x y)
     should request additions; names in the About box (`Jim Reisert`, `Joe Taylor`,
-    `WSJT Development Group`) are already there.
+    `WSJT Development Group`) are already there. The fix round added `cm`, `mm`, `kg`,
+    `Return`, `Tab`, `Space`, `Backspace`, `Delete`, `Del`, `Insert`, `Home`, `End`.
   - `language_name(language) -> str`: native name for `en` / `sr_Latn` / `sr_Cyrl`, translated
     `Auto (QGIS language)` for `auto`. The GUI should use it instead of adding the same key to
     its own catalog: the guard requires one translation per English text across all catalogs.
-  - `load_problems() -> list[str]`: translated problems of the latest `load_catalog()` call.
-    The module translator's lazy load is such a call, so the plugin should call it after the
-    first Serbian translation (for example after applying the language) and log the result.
+  - `load_problems() -> list[str]` (semantics refined in the fix round): translated problems
+    of the latest `load_catalog()` call; while no such call was made, those of the module
+    translator's own lazy load of `hamq/i18n/sr_Latn/`. That load never replaces a call's
+    problems, so repeated reads return the same list. In production nothing else calls
+    `load_catalog()`, so the plugin should call `load_problems()` after the first Serbian
+    translation (for example after applying the language) and log the result.
   - `Translator(catalog=None, language="en", *, loader=None)`: `loader` supplies the catalog
     lazily (used by the singleton).
   - Documented behaviour: `resolve_language(None or "", locale)` means `auto`; `set_language` /
@@ -170,10 +255,17 @@ every translatable string of `hamq/` in the Serbian catalogs.
   `LANG`) when they carry `@latin`. `resolve_language` accepts all of these spellings. The host
   QGIS install has no `qgis_sr*.qm`, so Serbian users often run QGIS itself in English;
   `auto` then follows the system locale only if the GUI passes it.
-- Known transliteration limits (documented, out of scope): digraph pairs across a morpheme
-  boundary (`nadživeti`, `podžupan`, `injekcija`, `konjunkcija`; xfail tests); all-caps words
-  without č ć đ š ž stay Latin (`UPOZORENJE`); case endings glued to a protected name without a
-  hyphen (`Hamliba`) are transliterated with the name.
-- The guard scans only `hamq/**/*.py`, so the stray `w/` copy at the repository root (already
-  reported in M4-01) does not affect it; it should still be removed before committing.
+- Known transliteration limits (documented and tested, out of scope): digraph pairs across a
+  morpheme boundary (`nadživeti`, `podžupan`, `injekcija`, `konjunkcija`; xfail tests);
+  all-caps words without č ć đ š ž stay Latin (`UPOZORENJE`); case endings glued to a
+  protected name without a hyphen (`Hamliba`) are transliterated with the name; a relative
+  path without a technical part or with a single `/` is read as words (`profil/podaci`: pass
+  paths as `{path}`); a vowel-initial word after a hyphen that follows a technical token is
+  taken for a case ending (`v0.1.0-alfa` -> `v0.1.0-алфа`); after a number or a placeholder
+  `s` is the unit (`5 s`, `{seconds} s`), so translators should write the preposition as `sa`
+  there.
+- For translators (catalog authors): write unit symbols as usual (`20 m`, `5 s`, `(km)`,
+  `m/s`); they stay Latin in Cyrillic, like `km` and `MHz`.
+- The guard calls the private helper `i18n._catalog_file_names()` so that it checks exactly
+  the files the runtime loads; renaming that helper needs the guard updated too.
 - `CHANGELOG.md` was not updated (outside this task's file scope in the parallel run).

@@ -6,8 +6,9 @@ import os
 import xml.etree.ElementTree as ET
 
 import pytest
-from qgis.core import QgsApplication, QgsProcessingAlgorithm
+from qgis.core import QgsApplication, QgsProcessingAlgorithm, QgsProcessingParameterString
 from qgis.PyQt import sip
+from qgis.PyQt.QtCore import QModelIndex, Qt
 from qgis.PyQt.QtWidgets import QToolBar
 
 import hamq
@@ -15,6 +16,7 @@ from hamq import plugin as plugin_module
 from hamq.events import events
 from hamq.gui import ICONS_DIR, icon_path
 from hamq.processing import provider as provider_module
+from hamq.qgis_io import compat
 
 REQUIRED_ICONS = (
     "hamq.svg",
@@ -52,6 +54,51 @@ def language_receivers() -> int:
     return obj.receivers(obj.languageChanged)
 
 
+def toolbox_model():
+    """A Processing Toolbox tree model with the toolbox filter (as in the QGIS dock)."""
+    gui = pytest.importorskip("qgis.gui", reason="qgis.gui is not available in this build")
+    proxy_class = gui.QgsProcessingToolboxProxyModel
+    try:
+        toolbox_filter = proxy_class.Filter.Toolbox
+    except AttributeError:  # QGIS 3.34 has only the old name
+        toolbox_filter = proxy_class.FilterToolbox
+    model = proxy_class(None, QgsApplication.processingRegistry())
+    model.setFilters(toolbox_filter)
+    return model
+
+
+def toolbox_rows(model, parent=None) -> list[tuple[str, list]]:
+    """``(display text, children)`` of every visible row below ``parent`` (the root)."""
+    parent = QModelIndex() if parent is None else parent
+    rows = []
+    for row in range(model.rowCount(parent)):
+        index = model.index(row, 0, parent)
+        rows.append((model.data(index, Qt.ItemDataRole.DisplayRole), toolbox_rows(model, index)))
+    return rows
+
+
+def toolbox_children(model, name: str) -> list[tuple[str, list]] | None:
+    """Children of the top-level toolbox row ``name`` (a provider), None when not shown."""
+    for text, children in toolbox_rows(model):
+        if text == name:
+            return children
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _no_leftover_provider():
+    """Remove a provider that a failed test left registered, so failures do not cascade.
+
+    Runs after the test and its other fixtures; tests that check unload() assert on
+    the registry themselves before this runs.
+    """
+    yield
+    registry = QgsApplication.processingRegistry()
+    leftover = registry.providerById("hamq")
+    if leftover is not None:
+        registry.removeProvider(leftover)
+
+
 @pytest.fixture
 def loaded(iface, process_events):
     """A plugin after initGui(); unloaded after the test."""
@@ -68,7 +115,7 @@ def test_class_factory_returns_plugin(iface):
     assert plugin.iface is iface
 
 
-def test_load_and_unload_twice(iface, process_events):
+def test_load_and_unload_twice(iface, process_events, log_messages):
     receivers_before = language_receivers()
     for _round in range(2):
         plugin = hamq.classFactory(iface)
@@ -106,6 +153,10 @@ def test_load_and_unload_twice(iface, process_events):
         assert plugin.actions() == []
         assert language_receivers() == receivers_before
 
+    # nothing for the log panel: no warning or error from HamQ, Processing or Qt
+    problems = [m for m in log_messages if m[2] in (compat.MSG_WARNING, compat.MSG_CRITICAL)]
+    assert problems == []
+
 
 def test_unload_is_idempotent(iface, process_events):
     plugin = hamq.classFactory(iface)
@@ -116,12 +167,18 @@ def test_unload_is_idempotent(iface, process_events):
     assert "hamq" not in provider_ids()
 
 
-def test_init_processing_only_then_unload(iface, process_events):
+def test_init_processing_only_then_unload(iface, process_events, log_messages):
     """qgis_process calls initProcessing() without initGui()."""
     plugin = hamq.classFactory(iface)
     plugin.initProcessing()
-    plugin.initProcessing()  # idempotent
+    first = plugin.provider
+    assert first is not None
+    plugin.initProcessing()  # idempotent: no second provider, no failed registration
+    assert plugin.provider is first
     assert provider_ids().count("hamq") == 1
+    # A second registration would be refused by the registry (duplicate id) and
+    # logged by the plugin as a warning; the provider count alone cannot show it.
+    assert [m for m in log_messages if m[1] == plugin_module.LOG_TAG] == []
     plugin.unload()
     process_events()
     assert "hamq" not in provider_ids()
@@ -176,6 +233,19 @@ def test_add_action_options(loaded, process_events):
     action.trigger()
     assert triggered == [True]
     assert action in loaded.actions()
+
+
+def test_add_action_checked_state(loaded):
+    checked = loaded.add_action(None, "Checked action", checkable=True, checked=True)
+    assert checked.isCheckable()
+    assert checked.isChecked()
+    unchecked = loaded.add_action(None, "Unchecked action", checkable=True)
+    assert unchecked.isCheckable()
+    assert not unchecked.isChecked()
+    plain = loaded.add_action(None, "Plain action", checked=True)  # checked needs checkable
+    assert not plain.isCheckable()
+    assert not plain.isChecked()
+    assert plain.icon().isNull()
 
 
 def test_cleanups_run_last_in_first_out(iface, process_events):
@@ -278,6 +348,85 @@ def test_processing_runs_provider_algorithms(loaded, qgis_processing, monkeypatc
     monkeypatch.setattr(provider_module, "ALGORITHMS", [_DummyAlgorithm])
     loaded.provider.refreshAlgorithms()
     assert qgis_processing.run("hamq:dummy", {}) == {}
+
+
+def test_toolbox_shows_provider_only_with_algorithms(loaded, monkeypatch):
+    """QGIS hides a Processing provider without algorithms in the toolbox.
+
+    M0 registers the provider with an empty ALGORITHMS list: it is in the
+    registry, and "HamQ" appears in the Processing Toolbox with the first
+    algorithm (M1), not before.
+    """
+    monkeypatch.setattr(provider_module, "ALGORITHMS", [])
+    loaded.provider.refreshAlgorithms()
+    assert QgsApplication.processingRegistry().providerById("hamq") is not None
+    assert toolbox_children(toolbox_model(), "HamQ") is None
+
+    monkeypatch.setattr(provider_module, "ALGORITHMS", [_DummyAlgorithm])
+    loaded.provider.refreshAlgorithms()
+    assert toolbox_children(toolbox_model(), "HamQ") == [("Dummy", [])]
+
+
+class _LabelledAlgorithm(QgsProcessingAlgorithm):
+    """Algorithm whose group and parameter label are read from LABELS.
+
+    Stands in for a translated algorithm: real ones return tr() texts from
+    group() and initAlgorithm(). The provider keeps the parameters built by
+    initAlgorithm() and an open toolbox keeps the group names until
+    provider.refreshAlgorithms() re-creates the algorithms.
+    """
+
+    LABELS = {"group": "Locators", "parameter": "Locator"}
+
+    def name(self):
+        return "labelled"
+
+    def displayName(self):
+        return "Labelled"
+
+    def group(self):
+        return self.LABELS["group"]
+
+    def groupId(self):
+        return "labelled"
+
+    def createInstance(self):
+        return _LabelledAlgorithm()
+
+    def initAlgorithm(self, config=None):
+        self.addParameter(QgsProcessingParameterString("LOCATOR", self.LABELS["parameter"]))
+
+    def processAlgorithm(self, parameters, context, feedback):
+        return {}
+
+
+def test_language_change_refreshes_provider_algorithms(loaded, monkeypatch):
+    """After a language change the plugin calls provider.refreshAlgorithms() (contract)."""
+    monkeypatch.setattr(provider_module, "ALGORITHMS", [_LabelledAlgorithm])
+    loaded.provider.refreshAlgorithms()
+    parameter = loaded.provider.algorithm("labelled").parameterDefinition("LOCATOR")
+    assert parameter.description() == "Locator"
+    reloaded = []
+    loaded.provider.algorithmsLoaded.connect(lambda: reloaded.append(True))
+
+    monkeypatch.setitem(_LabelledAlgorithm.LABELS, "parameter", "Lokator")
+    events().languageChanged.emit("sr_Latn")
+
+    assert reloaded == [True]
+    parameter = loaded.provider.algorithm("labelled").parameterDefinition("LOCATOR")
+    assert parameter.description() == "Lokator"
+
+
+def test_open_toolbox_follows_language_change(loaded, monkeypatch):
+    monkeypatch.setattr(provider_module, "ALGORITHMS", [_LabelledAlgorithm])
+    loaded.provider.refreshAlgorithms()
+    model = toolbox_model()  # stays open, like the Processing Toolbox dock
+    assert toolbox_children(model, "HamQ") == [("Locators", [("Labelled", [])])]
+
+    monkeypatch.setitem(_LabelledAlgorithm.LABELS, "group", "Lokatori")
+    events().languageChanged.emit("sr_Latn")
+
+    assert toolbox_children(model, "HamQ") == [("Lokatori", [("Labelled", [])])]
 
 
 def test_iface_rejects_unknown_methods(iface):

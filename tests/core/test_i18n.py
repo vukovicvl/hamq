@@ -44,9 +44,10 @@ OWN_CATALOG = CATALOG_DIR / "core_i18n.json"
 
 @pytest.fixture(autouse=True)
 def fresh_state(monkeypatch):
-    """New module translator and an empty problem list for each test (restored afterwards)."""
+    """New module translator and no recorded load problems for each test (restored afterwards)."""
     monkeypatch.setattr(i18n, "_translator", None)
-    monkeypatch.setattr(i18n, "_problems", [])
+    monkeypatch.setattr(i18n, "_problems", None)
+    monkeypatch.setattr(i18n, "_translator_problems", None, raising=False)
 
 
 def write_json(path: Path, data: object) -> Path:
@@ -98,6 +99,12 @@ def test_languages_have_native_names():
         ("auto", "sr_ME.UTF-8", "sr_Latn"),
         ("auto", "Serbian (Latin)_Serbia.1250", "sr_Latn"),  # Windows locale names
         ("auto", "Serbian_Serbia.1251", "sr_Cyrl"),
+        # BCP 47 extensions (-u-, -t-) and private use (-x-) never carry the script or region
+        ("auto", "sr-RS-u-nu-latn", "sr_Cyrl"),  # Latin digits only; the script stays Cyrillic
+        ("auto", "sr-RS-x-latn", "sr_Cyrl"),
+        ("auto", "sr-x-ME", "sr_Cyrl"),
+        ("auto", "sr-Latn-RS-u-nu-latn", "sr_Latn"),
+        ("auto", "sr-ME-u-ca-gregory", "sr_Latn"),
         ("auto", " sr_RS ", "sr_Cyrl"),
         ("auto", "en_US.UTF-8", "en"),
         ("auto", "en", "en"),
@@ -353,13 +360,13 @@ def test_singleton_is_shared_and_english_by_default():
 
 def test_singleton_loads_the_plugin_catalogs_lazily(monkeypatch):
     loads = []
-    real = i18n.load_catalog
+    real = i18n._read_catalogs
 
     def counting(directory):
         loads.append(Path(directory))
         return real(directory)
 
-    monkeypatch.setattr(i18n, "load_catalog", counting)
+    monkeypatch.setattr(i18n, "_read_catalogs", counting)
     assert tr("Auto (QGIS language)") == "Auto (QGIS language)"
     set_language(LANG_SR_LATN)
     assert loads == []  # switching alone does not read files
@@ -467,6 +474,14 @@ def test_bom_and_unrelated_files(tmp_path):
     assert load_problems() == []
 
 
+def test_catalog_file_names_ignore_case_of_the_extension(tmp_path):
+    (tmp_path / "b.json").write_text('{"B": "Be"}', encoding="utf-8")
+    (tmp_path / "A_UPPER.JSON").write_text('{"Upper": "Gornji"}', encoding="utf-8")
+    (tmp_path / ".hidden.JSON").write_text('{"Hidden": "Skriven"}', encoding="utf-8")
+    assert i18n._catalog_file_names(tmp_path) == ["A_UPPER.JSON", "b.json"]
+    assert load_catalog(tmp_path) == {"B": "Be", "Upper": "Gornji"}
+
+
 def test_missing_directory_gives_empty_catalog_and_a_problem(tmp_path):
     assert load_catalog(tmp_path / "missing") == {}
     problems = load_problems()
@@ -486,8 +501,6 @@ def test_problems_belong_to_the_latest_load(tmp_path):
 
 
 def test_problems_are_translated_when_read(tmp_path):
-    # The module translator reads the plugin catalogs with load_catalog() too, lazily on
-    # the first Serbian translation; do that first so the load below stays the latest one.
     set_language(LANG_SR_LATN)
     assert tr("Auto (QGIS language)") == "Automatski (jezik QGIS-a)"
     assert load_problems() == []  # the plugin catalogs load cleanly
@@ -498,6 +511,36 @@ def test_problems_are_translated_when_read(tmp_path):
     assert load_problems() == ["Фајл са преводима x.json није JSON објекат, прескочен је"]
     set_language(LANG_EN)
     assert load_problems() == ["Translation file x.json is not a JSON object and was skipped"]
+
+
+def test_reading_problems_never_changes_them(tmp_path):
+    # Review finding: translating the messages triggered the module translator's lazy load,
+    # which replaced the problems that were just reported.
+    set_language(LANG_SR_LATN)  # the module translator has not read its catalogs yet
+    (tmp_path / "x.json").write_text("[]", encoding="utf-8")
+    load_catalog(tmp_path)
+    expected = ["Fajl sa prevodima x.json nije JSON objekat, preskočen je"]
+    assert load_problems() == expected  # translating them loads the plugin catalogs ...
+    assert load_problems() == expected  # ... and that load keeps its problems apart
+    assert get_translator().translate("Auto (QGIS language)") == "Automatski (jezik QGIS-a)"
+
+
+def test_problems_of_the_module_translator_load(tmp_path, monkeypatch):
+    # Until code calls load_catalog() itself, load_problems() reports the problems of the
+    # module translator's own lazy load (the plugin logs them after applying the language).
+    (tmp_path / OWN_CATALOG.name).write_bytes(OWN_CATALOG.read_bytes())
+    (tmp_path / "x.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(i18n, "_CATALOG_DIR", str(tmp_path))
+    set_language(LANG_SR_LATN)
+    assert load_problems() == []  # nothing loaded yet, and reading loads nothing
+    assert tr("Auto (QGIS language)") == "Automatski (jezik QGIS-a)"
+    expected = ["Fajl sa prevodima x.json nije JSON objekat, preskočen je"]
+    assert load_problems() == expected
+    assert load_problems() == expected
+    set_language(LANG_EN)
+    assert load_problems() == ["Translation file x.json is not a JSON object and was skipped"]
+    load_catalog(CATALOG_DIR)  # an explicit load is the latest one from now on
+    assert load_problems() == []
 
 
 def test_problem_messages_keep_their_parameters(tmp_path):
@@ -749,6 +792,126 @@ def test_transliteration_protects_technical_text(latin, cyrillic):
     assert latin_to_cyrillic(latin) == cyrillic
 
 
+@pytest.mark.parametrize(
+    ("latin", "cyrillic"),
+    [
+        # a Serbian case ending after a file name, identifier or other technical token
+        (
+            "Greška pri preuzimanju cty.dat-a: {error}",
+            "Грешка при преузимању cty.dat-а: {error}",
+        ),
+        ("Greška u cty.dat-u", "Грешка у cty.dat-у"),
+        ("sa cty.dat-om i cty.csv-om", "са cty.dat-ом и cty.csv-ом"),
+        ("u hamq.gpkg-u", "у hamq.gpkg-у"),
+        ("(iz cty.dat-a).", "(из cty.dat-а)."),
+        ("vrednost my_call-a", "вредност my_call-а"),
+        ("algoritmom hamq:import_adif-om", "алгоритмом hamq:import_adif-ом"),
+        ("u EPSG:4326-u", "у EPSG:4326-у"),
+        ("sa YU1AB/P-om", "са YU1AB/P-ом"),
+        ("stanica/QTH-a", "станица/QTH-а"),
+        # hyphenated tails that are no case ending stay with their token
+        ("Fajlovi hamq.gpkg-wal i hamq.gpkg-shm", "Фајлови hamq.gpkg-wal и hamq.gpkg-shm"),
+        ("Paket hamq-0.1.0.zip", "Пакет hamq-0.1.0.zip"),
+        ("Slika python:3.9-slim", "Слика python:3.9-slim"),
+        ("Fajl cty.dat-A", "Фајл cty.dat-A"),
+    ],
+)
+def test_case_endings_after_technical_tokens(latin, cyrillic):
+    assert latin_to_cyrillic(latin) == cyrillic
+
+
+@pytest.mark.parametrize(
+    ("latin", "cyrillic"),
+    [
+        # unit symbols stay Latin like km, ms or MHz; m, s, h and min only where they are units
+        (
+            "Visina (m), vreme (s), osvežavanje (ms), rastojanje (km)",
+            "Висина (m), време (s), освежавање (ms), растојање (km)",
+        ),
+        ("Brzina (m/s) i (km/h)", "Брзина (m/s) и (km/h)"),
+        (
+            "Opseg 20 m, pauza 5 s, zatim 2 h i 30 min.",
+            "Опсег 20 m, пауза 5 s, затим 2 h и 30 min.",
+        ),
+        ("Pauza 1,5 s, od 10 do 20 s", "Пауза 1,5 s, од 10 до 20 s"),
+        ("Ponovo za {seconds} s", "Поново за {seconds} s"),
+        ("Čekaj %d s i [min]", "Чекај %d s и [min]"),
+        ("Visina (cm), masa (kg) i korak 5 mm", "Висина (cm), маса (kg) и корак 5 mm"),
+        # elsewhere they are Serbian: the preposition s, the abbreviation min.
+        ("Veza s YU1AB i s njim", "Веза с YU1AB и с њим"),
+        ("s obzirom na to", "с обзиром на то"),
+        ("Veza na FT8 s YU1AB", "Веза на FT8 с YU1AB"),
+        ("min. azimut", "мин. азимут"),
+        # keyboard keys
+        ("Pritisni Delete ili Tab", "Притисни Delete или Tab"),
+        (
+            "Tasteri Home, End, Insert, Backspace, Space i Return",
+            "Тастери Home, End, Insert, Backspace, Space и Return",
+        ),
+        ("Ctrl+Alt+Del", "Ctrl+Alt+Del"),
+    ],
+)
+def test_unit_symbols_and_keys(latin, cyrillic):
+    assert latin_to_cyrillic(latin) == cyrillic
+
+
+@pytest.mark.parametrize(
+    ("latin", "cyrillic"),
+    [
+        # words joined by '/' or '+' are judged one by one
+        ("Moja stanica/QTH", "Моја станица/QTH"),
+        ("veza/QSO", "веза/QSO"),
+        ("QSO/sat", "QSO/сат"),
+        ("AM/FM/Ostalo", "AM/FM/Остало"),
+        ("Ctrl+klik na mapu", "Ctrl+клик на мапу"),
+        ("Shift+Enter ili Ctrl+S", "Shift+Enter или Ctrl+S"),
+        # technical parts and one-letter parts next to them stay, so do units after '/'
+        ("YU1AB/P i YU1AB/M", "YU1AB/P и YU1AB/M"),
+        ("km/h, m/s, TX/RX i dB/km", "km/h, m/s, TX/RX и dB/km"),
+        ("Brzina: {rate} veza/h ili veza/min", "Брзина: {rate} веза/h или веза/min"),
+        # plain words stay words; '+' between single letters is a formula
+        ("ulaza/izlaza, da/ne/možda", "улаза/излаза, да/не/можда"),
+        ("Klik+prevuci", "Клик+превуци"),
+        ("a+b i x+y", "a+b и x+y"),
+        # a lowercase token with a technical part and two or more '/' is a relative path
+        ("Fascikla python/plugins/hamq", "Фасцикла python/plugins/hamq"),
+    ],
+)
+def test_words_joined_by_slash_or_plus(latin, cyrillic):
+    assert latin_to_cyrillic(latin) == cyrillic
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("prefix", "unit"),
+    [
+        ("", "<!--a"),
+        ("<!-- closed -->", "<!--a"),
+        ("", "a."),
+        ("", "{a"),
+        ("", "{{a"),
+        ("", "<a "),
+        ("", "&a"),
+        ("", "a/"),
+        ("", "a+"),
+        ("", "cty.dat-a "),
+        ("", "(s) "),
+    ],
+)
+def test_transliteration_time_is_linear(prefix, unit):
+    # Review finding: unclosed '<!--' made the old comment pattern quadratic (100 KB took
+    # about 11 s); linear patterns need well under a second for 100 KB.
+    text = prefix + unit * (100_000 // len(unit))
+    started = time.perf_counter()
+    latin_to_cyrillic(text)
+    assert time.perf_counter() - started < 3.0
+
+
+def test_html_comments_are_kept_and_unclosed_ones_are_text():
+    assert latin_to_cyrillic("a<!-- b -->c<!-- d") == "а<!-- b -->ц<!-- д"
+    assert latin_to_cyrillic("<!---->veza<!--x-->") == "<!---->веза<!--x-->"
+
+
 def test_all_caps_words_with_serbian_letters_are_transliterated():
     assert latin_to_cyrillic("GREŠKA U ČITANJU") == "ГРЕШКА У ЧИТАЊУ"
 
@@ -756,6 +919,19 @@ def test_all_caps_words_with_serbian_letters_are_transliterated():
 def test_all_caps_word_without_serbian_letters_is_treated_as_an_acronym():
     # Documented limitation: 'UPOZORENJE' cannot be told apart from an acronym.
     assert latin_to_cyrillic("UPOZORENJE") == "UPOZORENJE"
+
+
+@pytest.mark.parametrize(
+    ("latin", "cyrillic"),
+    [
+        ("profil/podaci", "профил/подаци"),  # a relative path without a technical part
+        ("verzija v0.1.0-alfa", "верзија v0.1.0-алфа"),  # a vowel-initial word: an ending
+        ("preko Hamliba", "преко Хамлиба"),  # an ending glued to a protected name
+        ("u my_call-u", "у my_call-у"),
+    ],
+)
+def test_documented_limitations_and_examples(latin, cyrillic):
+    assert latin_to_cyrillic(latin) == cyrillic
 
 
 @pytest.mark.parametrize("word", sorted(PROTECTED_WORDS))
@@ -782,6 +958,10 @@ def test_cyrillic_and_mixed_text():
         "Preuzmi cty.dat sa https://www.country-files.com",
         "Wi-Fi i YU1AB/P, ulaza/izlaza, 20-ak {call}-om",
         "Fijuče vetar u šiblju, ledi pasaže i kuće iza njih i gunđa u odžacima.",
+        "Greška u cty.dat-u, stanica/QTH, Ctrl+klik, pauza 5 s (m/s)",
+        # found by fuzzing: a case ending must be recognized in Cyrillic too
+        ".L+ž-i; ljubav",
+        "„udx+H-u“ i xg+/Š-opseg",
     ],
 )
 def test_transliteration_is_idempotent(text):

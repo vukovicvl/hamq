@@ -1,6 +1,6 @@
 """Tests for hamq.core.cty: AD1C cty.dat / cty.csv parsing and callsign -> DXCC entity lookup.
 
-The fixture ``tests/fixtures/cty/cty_excerpt.dat`` / ``.csv`` is a 21-entity excerpt of the
+The fixture ``tests/fixtures/cty/cty_excerpt.dat`` / ``.csv`` is a 20-entity excerpt of the
 real AD1C "Big CTY" files of 15 September 2026 (see the README there). Expected zones, codes
 and coordinates below were checked against the full real files.
 """
@@ -37,7 +37,6 @@ EXCERPT_NAMES = [
     "Italy",
     "African Italy",
     "Sicily",
-    "Japan",
     "United States",
     "Guantanamo Bay",
     "Hawaii",
@@ -61,6 +60,10 @@ LATVIA = "Latvia:                   15:  29:  EU:   57.03:   -24.65:    -2.0:  Y
 EASTER_ISLAND = "Easter Island:            12:  63:  SA:  -27.10:   109.37:     6.0:  CE0Y:"
 GUANTANAMO = "Guantanamo Bay:           08:  11:  NA:   20.00:    75.00:     5.0:  KG4:"
 USA = "United States:            05:  08:  NA:   37.60:    91.87:     5.0:  K:"
+SVALBARD = "Svalbard:                 40:  18:  EU:   78.00:   -16.00:    -1.0:  JW:"
+BEAR_ISLAND = "Bear Island:              40:  18:  EU:   74.43:   -19.08:    -1.0:  *JW/b:"
+ANTARCTICA = "Antarctica:               13:  74:  SA:  -90.00:     0.00:     0.0:  CE9:"
+EUROPEAN_RUSSIA = "European Russia:          16:  29:  EU:   53.65:   -41.37:    -4.0:  UA:"
 
 
 @pytest.fixture(scope="module")
@@ -115,7 +118,7 @@ def test_fixture_is_ad1c_excerpt_with_crlf_and_comment_header():
 
 
 def test_entity_count_and_file_order(db):
-    assert len(db) == 21
+    assert len(db) == 20
     assert [e.name for e in db.entities] == EXCERPT_NAMES
     assert db.warnings == []
 
@@ -142,7 +145,6 @@ def test_entity_fields_from_header(db):
     [
         ("Serbia", 44.0, 21.0),
         ("United States", 37.6, -91.87),
-        ("Japan", 36.4, 138.38),
         ("Hawaii", 21.12, -157.48),
         ("Australia", -23.7, 132.33),
         ("Scotland", 56.82, -4.18),
@@ -211,7 +213,6 @@ def test_from_text_equals_from_files(db, dat_text):
         ("DL1ABC/YU", "Serbia", "EU", 15, 28),
         ("KH6XX", "Hawaii", "OC", 31, 61),
         ("KL7ABC", "Alaska", "NA", 1, 1),
-        ("JA1ABC", "Japan", "AS", 25, 45),
         ("VE1ABC", "Canada", "NA", 5, 9),
         ("OE1ABC", "Austria", "EU", 15, 28),
         ("GM3ABC", "Scotland", "EU", 14, 27),
@@ -272,6 +273,19 @@ def test_prefix_entries_with_overrides(db, call, matched, cq, itu):
     match = resolve(db, call)
     assert (match.matched, match.exact) == (matched, False)
     assert (match.cq_zone, match.itu_zone) == (cq, itu)
+
+
+def test_five_character_prefix_beats_shorter_ones():
+    # RI1AN(29)[69], Russian stations in Antarctica, is one of the real 5-character prefixes
+    db = CtyDatabase.from_text(f"{EUROPEAN_RUSSIA}\n    R;\n{ANTARCTICA}\n    RI1AN(29)[69];\n")
+    match = resolve(db, "RI1ANX")
+    assert (match.entity.name, match.matched, match.cq_zone, match.itu_zone) == (
+        "Antarctica",
+        "RI1AN",
+        29,
+        69,
+    )
+    assert resolve(db, "RI1AB").entity.name == "European Russia"
 
 
 def test_all_override_kinds_in_any_order():
@@ -358,6 +372,7 @@ def test_exact_maritime_mobile_call_with_other_modifiers(db, call):
         ("AD1C/QRP", "AD1C", "United States"),
         ("VE2FK/M", "VE2FK", "Canada"),
         ("IT9ACJ/I/BN/P", "IT9ACJ/I/BN", "Sicily"),  # progressive removal from the end
+        ("IT9ACJ/I/BN/P/QRP", "IT9ACJ/I/BN", "Sicily"),  # more than one suffix removed
         ("YU/IZ1VUC/LH/P", "YU/IZ1VUC/LH", "Serbia"),
         ("4U/DA1KY/P", "4U/DA1KY", "Serbia"),
         # =9A70DP/KA (Croatian county suffix): a modifier in the middle is dropped too;
@@ -514,8 +529,8 @@ def test_digit_suffix_is_dropped_not_a_call_area_change(db):
 
 
 def test_single_letter_suffix_is_not_a_country():
-    # AD1C's exception list never maps CALL/F, CALL/M, ... to France, England, ...;
-    # a single letter is an operating condition (portable, mobile, rover, ...)
+    # a single letter is taken as an operating condition (portable, mobile, rover, ...), not
+    # a country; the Big CTY lists e.g. CALL/D 1049 and CALL/F 119 times under the home entity
     db = CtyDatabase.from_text(f"{ENGLAND}\n    G,M;\n{GERMANY}\n    DL;\n")
     assert resolve(db, "DL1ABC/M").entity.name == "Fed. Rep. of Germany"
     assert resolve(db, "DL1ABC/G").entity.name == "Fed. Rep. of Germany"
@@ -545,8 +560,8 @@ def activity_db() -> CtyDatabase:
     [
         "DL1ABC/FF",  # WWFF (flora and fauna), not France
         "DL1ABC/FD",  # field day, not France
-        "DL1ABC/LT",  # light tower, not Argentina
-        "DL1ABC/LS",  # lightship, not Argentina
+        "DL1ABC/LT",  # lighthouse activation, not Argentina
+        "DL1ABC/LS",  # lightship activation, not Argentina
         "DL1ABC/YL",  # YL operator, not Latvia
         "DL1ABC/LH",  # lighthouse, not Norway
         "DL1ABC/FF/P",
@@ -577,6 +592,24 @@ def test_activity_suffix_letters_elsewhere_are_locations(activity_db, call, name
 
 def test_unknown_location_falls_back_to_home_call(db):
     assert resolve(db, "DL1ABC/XX").entity.name == "Fed. Rep. of Germany"
+
+
+@pytest.mark.parametrize(
+    ("call", "home", "name", "cq", "itu"),
+    [
+        # XX is no prefix, so the home call decides, and its exact entry beats its prefix
+        ("4U1VIC/XX", "4U1VIC", "Vienna Intl Ctr", 15, 28),  # prefix 4U alone: Italy
+        ("XX/4U1VIC", "4U1VIC", "Vienna Intl Ctr", 15, 28),
+        ("AD1C/XX", "AD1C", "United States", 4, 7),  # =AD1C(4)[7]; prefix AD: CQ 5, ITU 8
+        ("KG4CAN/XX", "KG4CAN", "Hawaii", 31, 61),  # =KG4CAN; the KG4 rule: United States
+        ("4O0A/XX", "4O0A", "Serbia", 15, 28),  # =4O0A; prefix 4O alone: Montenegro
+        ("4O0A/XX/P", "4O0A", "Serbia", 15, 28),
+    ],
+)
+def test_unknown_location_falls_back_to_the_exact_home_call(db, call, home, name, cq, itu):
+    match = resolve(db, call)
+    assert (match.entity.name, match.matched, match.exact) == (name, home, True)
+    assert (match.cq_zone, match.itu_zone) == (cq, itu)
 
 
 # --- KG4: Guantanamo Bay or United States ----------------------------------------------------
@@ -702,7 +735,8 @@ def test_wae_parent_without_csv_uses_documented_table(db_dat_only, call, dxcc_na
 
 def test_without_csv_no_entity_has_a_dxcc_code(db_dat_only):
     assert all(e.dxcc is None for e in db_dat_only.entities)
-    assert len(db_dat_only) == 21
+    assert len(db_dat_only) == 20
+    assert db_dat_only.warnings == []  # no cty.csv given: nothing to report
 
 
 @pytest.mark.parametrize(
@@ -717,7 +751,6 @@ def test_without_csv_no_entity_has_a_dxcc_code(db_dat_only):
         ("Bosnia-Herzegovina", 501),
         ("Canada", 1),
         ("Australia", 150),
-        ("Japan", 339),
         ("Hawaii", 110),
         ("Alaska", 6),
         ("Austria", 206),
@@ -755,6 +788,42 @@ def test_wae_parent_derived_from_csv_code():
     )
     alone = resolve(CtyDatabase.from_text(dat), "YU9T")
     assert (alone.dxcc, alone.dxcc_name) == (None, "Test Island")
+
+
+def test_bear_island_counts_for_svalbard_without_csv():
+    # the sixth WAE-only entity of the real file (real headers and exact calls); Norway's LA
+    # would be the wrong parent
+    db = CtyDatabase.from_text(
+        f"{NORWAY}\n    LA,LB;\n{SVALBARD}\n    JW;\n{BEAR_ISLAND}\n    =JW0BEA,=JW1I;\n"
+    )
+    match = resolve(db, "JW0BEA")
+    assert (match.entity.name, match.entity.wae_only, match.dxcc, match.dxcc_name) == (
+        "Bear Island",
+        True,
+        None,
+        "Svalbard",
+    )
+    assert resolve(db, "JW5ABC").dxcc_name == "Svalbard"
+
+
+def test_wae_entity_without_its_own_csv_row_gets_the_parent_code(dat_text):
+    # a cty.csv without the Sicily row: Sicily still counts for Italy, nothing is reported
+    csv_text = "\n".join(
+        line
+        for line in CSV.read_text(encoding="ascii").splitlines()
+        if not line.startswith("*IT9,")
+    )
+    db = CtyDatabase.from_text(dat_text, csv_text)
+    assert (entity(db, "Sicily").dxcc, entity(db, "Sicily").dxcc_name) == (248, "Italy")
+    assert db.warnings == []
+
+
+def test_ambiguous_csv_code_does_not_choose_the_wae_parent(dat_text):
+    # a broken cty.csv gives Montenegro Italy's code 248: Sicily's parent then comes from the
+    # built-in table, not from the first entity that has code 248
+    csv_text = CSV.read_text(encoding="ascii").replace("4O,Montenegro,514,", "4O,Montenegro,248,")
+    db = CtyDatabase.from_text(dat_text, csv_text)
+    assert resolve(db, "IT9ABC").dxcc_name == "Italy"
 
 
 def test_match_properties_for_hand_built_entity():
@@ -852,7 +921,7 @@ def test_corrupted_entity_is_skipped_rest_loads(dat_text):
     line = croatia_header_line(dat_text)
     broken = dat_text.replace("Croatia:                  15:", "Croatia:                  1X:")
     db = CtyDatabase.from_text(broken)
-    assert len(db) == 20
+    assert len(db) == 19
     assert "Croatia" not in [e.name for e in db.entities]
     assert db.lookup("9A1GS") is None
     assert resolve(db, "YU1AB").entity.name == "Serbia"
@@ -865,9 +934,23 @@ def test_corrupted_entity_is_skipped_rest_loads(dat_text):
     "bad_header",
     [
         "Croatia:                  15:  28:  EU:   45.18:",  # too few fields
+        "Croatia:                  15:  28:  EU:   45.18:   -15.30:    -1.0:  9A",  # no last ':'
         "Croatia:                  15:  28:  XX:   45.18:   -15.30:    -1.0:  9A:",  # continent
-        "Croatia:                  15:  99:  EU:   45.18:   -15.30:    -1.0:  9A:",  # ITU zone
+        "Croatia:                  00:  28:  EU:   45.18:   -15.30:    -1.0:  9A:",  # CQ zone
+        "Croatia:                  41:  28:  EU:   45.18:   -15.30:    -1.0:  9A:",
+        "Croatia:                  15:  00:  EU:   45.18:   -15.30:    -1.0:  9A:",  # ITU zone
+        "Croatia:                  15:  91:  EU:   45.18:   -15.30:    -1.0:  9A:",
+        "Croatia:                  15:  99:  EU:   45.18:   -15.30:    -1.0:  9A:",
         "Croatia:                  15:  28:  EU:   nan:   -15.30:    -1.0:  9A:",  # latitude
+        "Croatia:                  15:  28:  EU:   95.00:   -15.30:    -1.0:  9A:",
+        "Croatia:                  15:  28:  EU:  -95.00:   -15.30:    -1.0:  9A:",
+        "Croatia:                  15:  28:  EU:   45.18:   200.00:    -1.0:  9A:",  # longitude
+        "Croatia:                  15:  28:  EU:   45.18:  -200.00:    -1.0:  9A:",
+        "Croatia:                  15:  28:  EU:   45.18:     inf:    -1.0:  9A:",
+        "Croatia:                  15:  28:  EU:   45.18:   -15.30:    30.0:  9A:",  # UTC offset
+        "Croatia:                  15:  28:  EU:   45.18:   -15.30:   -30.0:  9A:",
+        "Croatia:                  15:  28:  EU:   45.18:   -15.30:    24.0:  9A:",
+        "Croatia:                  15:  28:  EU:   45.18:   -15.30:   -24.0:  9A:",
         "Croatia:                  15:  28:  EU:   45.18:   -15.30:    -1.0:    :",  # prefix
         ":                         15:  28:  EU:   45.18:   -15.30:    -1.0:  9A:",  # name
     ],
@@ -875,10 +958,40 @@ def test_corrupted_entity_is_skipped_rest_loads(dat_text):
 def test_invalid_headers_skip_only_that_entity(dat_text, bad_header):
     good = next(line for line in dat_text.splitlines() if line.startswith("Croatia:"))
     db = CtyDatabase.from_text(dat_text.replace(good, bad_header))
-    assert len(db) == 20
+    assert len(db) == 19
     assert db.lookup("9A1GS") is None
     assert resolve(db, "DL1ABC").entity.name == "Fed. Rep. of Germany"
-    assert db.warnings
+    assert len(db.warnings) == 1
+    assert mentions_number(db.warnings[0], croatia_header_line(dat_text))
+
+
+@pytest.mark.parametrize(
+    ("header", "values"),
+    [
+        # the extremes of the real file: Antarctica -90.00, Eastern Kiribati UTC offset -14.0,
+        # Baker & Howland Islands 12.0; the zone limits CQ 1..40 and ITU 1..90
+        (
+            "Edge:  01:  01:  AN:  -90.00:   180.00:   -14.0:  ZZ:",
+            (1, 1, "AN", -90.0, -180.0, -14.0),
+        ),
+        (
+            "Edge:  40:  90:  AN:   90.00:  -180.00:    12.0:  ZZ:",
+            (40, 90, "AN", 90.0, 180.0, 12.0),
+        ),
+    ],
+)
+def test_header_values_at_the_limits_are_accepted(header, values):
+    db = CtyDatabase.from_text(f"{header}\n    ZZ;\n")
+    assert db.warnings == []
+    e = db.entities[0]
+    assert (e.cq_zone, e.itu_zone, e.continent, e.lat, e.lon, e.utc_offset) == values
+
+
+def test_lowercase_continent_in_header_is_accepted():
+    db = CtyDatabase.from_text(SERBIA.replace("EU:", "eu:") + "\n    YU;\n")
+    assert db.warnings == []
+    assert db.entities[0].continent == "EU"
+    assert resolve(db, "YU1AB").continent == "EU"
 
 
 def test_bad_entry_is_skipped_rest_of_entity_loads():
@@ -889,6 +1002,47 @@ def test_bad_entry_is_skipped_rest_of_entity_loads():
     assert resolve(db, "YU1A").cq_zone == 15  # YU(99) was rejected, plain YU kept
     assert len(db.warnings) == 3
     assert all(mentions_number(w, 2) for w in db.warnings)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "YU(0)",
+        "YU(41)",
+        "YU[0]",
+        "YU[91]",
+        "YU{XX}",
+        "YU{E}",
+        "YU<95.00/0.00>",
+        "YU<-95.00/0.00>",
+        "YU<45.00/181.00>",
+        "YU<45.00/-181.00>",
+        "YU<45.00>",
+        "YU<a/b>",
+        "YU~30~",
+        "YU~24~",
+        "YU~-24~",
+        "YU~x~",
+        "YU(\u0661\u0665)",  # Arabic-Indic digits are not a zone number
+    ],
+)
+def test_invalid_override_skips_the_entry(entry):
+    db = CtyDatabase.from_text(f"{SERBIA}\n    YT,{entry};\n")
+    assert resolve(db, "YT1A").entity.name == "Serbia"
+    assert db.lookup("YU1A") is None  # skipped, not loaded with the entity defaults
+    assert len(db.warnings) == 1
+    assert mentions_number(db.warnings[0], 2)
+
+
+def test_override_values_at_the_limits_are_accepted():
+    db = CtyDatabase.from_text(
+        f"{SERBIA}\n    YU<-90.00/-180.00>~12.0~(40)[90],YT<90.00/180.00>~-14.0~(1)[1];\n"
+    )
+    assert db.warnings == []
+    m = resolve(db, "YU1A")
+    assert (m.lat, m.lon, m.utc_offset, m.cq_zone, m.itu_zone) == (-90.0, 180.0, 12.0, 40, 90)
+    m = resolve(db, "YT1A")
+    assert (m.lat, m.lon, m.utc_offset, m.cq_zone, m.itu_zone) == (90.0, -180.0, -14.0, 1, 1)
 
 
 def test_missing_semicolon_keeps_both_entities():
@@ -959,9 +1113,30 @@ def test_from_files_decodes_non_utf8_bytes(tmp_path):
     assert resolve(db, "YU1AB").entity.name == "Serbia\u00e9"
 
 
+def test_from_files_ignores_a_utf8_bom(tmp_path):
+    # the fixture starts with a '#' line: after a BOM it must still be read as a comment
+    dat_path = tmp_path / "cty.dat"
+    dat_path.write_bytes(b"\xef\xbb\xbf" + DAT.read_bytes())
+    csv_path = tmp_path / "cty.csv"
+    csv_path.write_bytes(b"\xef\xbb\xbf" + CSV.read_bytes())
+    db = CtyDatabase.from_files(dat_path, csv_path)
+    assert db.warnings == []
+    assert db.entities == CtyDatabase.from_files(DAT, CSV).entities
+
+
+@pytest.mark.parametrize("first_line", ["", "# comment\n"])
+def test_from_text_ignores_a_leading_bom(first_line):
+    db = CtyDatabase.from_text(
+        f"\ufeff{first_line}{SERBIA}\n    YU;\n",
+        "\ufeffYU,Serbia,296,EU,15,28,44.00,-21.00,-1.0,YU;\n",
+    )
+    assert db.warnings == []
+    assert (db.entities[0].name, db.entities[0].dxcc) == ("Serbia", 296)
+
+
 def test_from_files_missing_csv_loads_without_codes(tmp_path):
     db = CtyDatabase.from_files(DAT, tmp_path / "missing.csv")
-    assert len(db) == 21
+    assert len(db) == 20
     assert resolve(db, "YU1AB").dxcc is None
     assert len(db.warnings) == 1
 
@@ -980,9 +1155,76 @@ def test_bad_csv_rows_are_skipped():
     db = CtyDatabase.from_text(dat, csv_text)
     assert entity(db, "Serbia").dxcc == 296
     assert entity(db, "Fed. Rep. of Germany").dxcc is None
+    # first how many entities have no code (Germany), then the rows
+    assert len(db.warnings) == 3
+    assert mentions_number(db.warnings[0], 1)
+    assert mentions_number(db.warnings[1], 4)
+    assert mentions_number(db.warnings[2], 5)
+
+
+@pytest.mark.parametrize(
+    "csv_text",
+    [
+        "",  # empty download
+        "\r\n",
+        "# comment only\r\n",
+        "ZZ,Nowhere,999,EU,15,28,44.00,-21.00,-1.0,ZZ;\r\n",  # rows of another file
+    ],
+    ids=["empty", "blank-line", "comment-only", "other-file"],
+)
+def test_csv_without_any_matching_row_is_reported(dat_text, csv_text):
+    db = CtyDatabase.from_text(dat_text, csv_text)
+    assert all(e.dxcc is None for e in db.entities)
+    assert len(db.warnings) == 1
+    assert mentions_number(db.warnings[0], 20)
+
+
+def test_truncated_csv_is_reported(dat_text):
+    lines = CSV.read_text(encoding="ascii").splitlines()
+    assert lines[9].startswith("GM,Scotland,")
+    cut = "\r\n".join(lines[:9]) + "\r\nGM,Scotl"  # download cut off in line 10
+    db = CtyDatabase.from_text(dat_text, cut)
+    assert [e.name for e in db.entities if e.dxcc is not None] == EXCERPT_NAMES[:5]
     assert len(db.warnings) == 2
-    assert mentions_number(db.warnings[0], 4)
-    assert mentions_number(db.warnings[1], 5)
+    assert mentions_number(db.warnings[0], 15)  # entities without a code
+    assert mentions_number(db.warnings[1], 10)  # the cut row
+
+
+def test_csv_summary_is_kept_when_row_warnings_are_capped(dat_text):
+    db = CtyDatabase.from_text(dat_text, "not,a code\n" * 60)
+    assert all(e.dxcc is None for e in db.entities)
+    # the summary, 50 row warnings, then how many were not listed
+    assert len(db.warnings) == 52
+    assert mentions_number(db.warnings[0], 20)
+    assert mentions_number(db.warnings[-1], 10)
+
+
+def test_complete_csv_gives_no_warning(dat_text):
+    db = CtyDatabase.from_text(dat_text, CSV.read_text(encoding="ascii"))
+    assert all(e.dxcc is not None for e in db.entities)
+    assert db.warnings == []
+
+
+@pytest.mark.parametrize(
+    ("code", "dxcc"),
+    [
+        ("1", 1),
+        ("522", 522),
+        ("999", 999),
+        ("0", None),
+        ("1000", None),
+        ("-296", None),
+        ("296.0", None),
+        ("\uff12\uff19\uff16", None),  # full-width digits
+    ],
+)
+def test_csv_dxcc_code_range(code, dxcc):
+    db = CtyDatabase.from_text(
+        f"{SERBIA}\n    YU;\n", f"YU,Serbia,{code},EU,15,28,44.00,-21.00,-1.0,YU;\n"
+    )
+    assert entity(db, "Serbia").dxcc == dxcc
+    # a rejected code: the summary (1 entity without a code) and the row (line 1)
+    assert len(db.warnings) == (0 if dxcc else 2)
 
 
 def test_empty_database_object():

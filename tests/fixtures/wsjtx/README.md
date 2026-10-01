@@ -15,6 +15,7 @@ python3 scripts/make_wsjtx_fixtures.py            # regenerate
 python3 scripts/make_wsjtx_fixtures.py --check    # verify, write nothing
 PYTHONPATH=/usr/share/qgis/python QT_QPA_PLATFORM=offscreen \
     python3 scripts/make_wsjtx_fixtures.py --verify-qt   # rebuild with Qt's QDataStream
+# QGIS built from source (e.g. camptocamp/qgis-server): /usr/local/share/qgis/python
 ```
 
 Scenario: YU1ABC (KN04ft, Belgrade) works YU7ABC (JN95) with FT8 on 40 m on
@@ -57,11 +58,13 @@ with a higher one; a logger that only listens therefore sees schema 2.
 WSJT-X builds the ADIF record with `QString::toLatin1()` (`LogBook::QSOToADIF`), so the
 "utf8" field really carries Latin-1: `Jürgen` arrives as the byte `0xFC`, and letters
 that are not in Latin-1, including Serbian `č ć š ž đ Č Ć Š Ž Đ`, are replaced by `?`
-before sending. JTDX sends the record as UTF-8. Both count ADIF field lengths in
-characters. `decode()` reads UTF-8 and falls back to Latin-1, so both arrive intact;
-a Serbian name typed in WSJT-X arrives as `?or?e` and cannot be recovered. The
-QSO Logged message (type 5) always uses UTF-8. A capture from WSJT-X 2.7.0 confirms the
-WSJT-X part: `captured/wsjtx-2.7.0_logged_adif.bin` carries
+before sending. JTDX sends the record as UTF-8. Both write each ADIF field length as
+`QString::size()`, in UTF-16 code units: one per character, but two for a character
+above U+FFFF such as an emoji, which WSJT-X sends as `??`. `decode()` reads UTF-8 and
+falls back to Latin-1, so both arrive intact; a Serbian name typed in WSJT-X arrives
+as `?or?e` and cannot be recovered. The QSO Logged message (type 5) always uses UTF-8.
+A capture from WSJT-X 2.7.0 confirms the WSJT-X part:
+`captured/wsjtx-2.7.0_logged_adif.bin` carries
 `<comment:15>?or?e 73 J\xfcrgen` for the comment "Đorđe 73 Jürgen". The JTDX part comes
 from the JTDX source (`logqso.cpp`: `myadif.trimmed().toUtf8()`) and was not captured.
 

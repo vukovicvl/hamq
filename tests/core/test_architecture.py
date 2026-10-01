@@ -1,8 +1,11 @@
-"""Architecture rule: hamq/core is pure Python (no QGIS or Qt imports, AGENTS.md).
+"""Architecture rules checked on the source (AGENTS.md, docs/ARCHITECTURE.md).
 
-Every module under hamq/core is parsed with ``ast`` (never imported) and checked
-for imports of QGIS, Qt bindings or sip, including dynamic imports and imports
-of HamQ modules outside ``hamq.core`` (those pull QGIS in indirectly).
+* hamq/core is pure Python: every module under hamq/core is parsed with ``ast``
+  (never imported) and checked for imports of QGIS, Qt bindings or sip,
+  including dynamic imports and imports of HamQ modules outside ``hamq.core``
+  (those pull QGIS in indirectly).
+* Every module under hamq/ has ``from __future__ import annotations``
+  (ARCHITECTURE.md, "General rules").
 """
 
 from __future__ import annotations
@@ -153,3 +156,45 @@ def test_scanner_resolves_subpackage_relative_imports():
     package = ["hamq", "core", "sub"]
     assert forbidden_imports("from .. import bands", package) == []
     assert forbidden_imports("from ... import plugin", package) != []
+
+
+# --- from __future__ import annotations in every module ------------------------------
+
+PACKAGE_FILES = sorted((REPO_ROOT / "hamq").rglob("*.py"))
+# Modules outside the M0 scope that still lack the import. Their owners add it;
+# until then the test reports them as xfail (and passes once they are fixed).
+FUTURE_IMPORT_PENDING = frozenset({"hamq/__init__.py", "hamq/core/__init__.py"})
+
+
+def has_future_annotations(source: str) -> bool:
+    """True when ``source`` has a module-level ``from __future__ import annotations``."""
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in ast.parse(source).body
+    )
+
+
+@pytest.mark.parametrize("path", PACKAGE_FILES, ids=lambda p: p.relative_to(REPO_ROOT).as_posix())
+def test_module_has_future_annotations(path):
+    rel = path.relative_to(REPO_ROOT).as_posix()
+    found = has_future_annotations(path.read_text(encoding="utf-8"))
+    if not found and rel in FUTURE_IMPORT_PENDING:
+        pytest.xfail(f"{rel} is outside the M0 scope; its owner adds the import")
+    assert found, f"{rel}: add 'from __future__ import annotations' after the module docstring"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('"""Docstring."""\n\nfrom __future__ import annotations\n', True),
+        ("from __future__ import annotations, division\n", True),
+        ('"""Only a docstring."""\n', False),
+        ("from __future__ import division\n", False),
+        ("def f():\n    pass\n", False),
+        ("text = 'from __future__ import annotations'\n", False),
+    ],
+)
+def test_future_import_scanner(source, expected):
+    assert has_future_annotations(source) is expected

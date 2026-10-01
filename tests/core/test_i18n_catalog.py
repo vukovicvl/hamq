@@ -7,18 +7,24 @@ or catalog, and so the owner, that has to change:
 
 a. ``tr()``, ``tr_noop()`` and ``<anything>.tr()`` get one plain string literal. Allowed
    exceptions: calls inside a function named ``tr`` (delegating helpers) and ``tr()`` of
-   a bare name, attribute or subscript (a value marked with ``tr_noop`` elsewhere).
-   f-strings, ``+``, ``%`` and ``.format()`` inside the argument are errors, and so is
-   ``tr()`` at import time (the text would never follow a language switch).
+   a bare name, an attribute or a subscript of a name or attribute (a value or table
+   marked with ``tr_noop`` elsewhere; an indexed literal such as ``("Yes", "No")[i]``
+   is an error). f-strings, ``+``, ``%`` and ``.format()`` inside the argument are
+   errors, and so is ``tr()`` at import time (the text would never follow a language
+   switch).
 b. Every such literal is in the merged Serbian (Latin) catalog with a non-empty value.
 c. The ``{placeholders}`` of a key and of its value are the same set, also after
    transliteration to Cyrillic.
 d. Each catalog is a UTF-8 JSON object with sorted keys, no duplicate keys, non-empty
    string values in Latin script, written canonically; a text translated in two files
-   has the same translation in both.
-e. No Qt translation API: ``QCoreApplication.translate``, ``QObject.tr``, ``QT_TR_NOOP``
-   and friends, or ``self.tr()`` in a class without its own HamQ ``tr`` method (that is
-   Qt's ``QObject.tr``, which never sees the HamQ catalogs).
+   has the same translation in both. The catalog files are selected exactly as the
+   runtime loader selects them (``*.json`` in any case, no hidden files).
+e. No Qt translation API: ``translate()`` / ``tr()`` of ``QCoreApplication``,
+   ``QGuiApplication``, ``QApplication``, ``QgsApplication`` (also imported under
+   another name, their ``instance()`` or ``qApp``), ``QObject.tr``, ``super().tr()``,
+   ``QT_TR_NOOP`` and friends (also as ``QtCore.QT_TR_NOOP``), or ``self.tr()`` in a
+   class without its own HamQ ``tr`` method (that is Qt's ``QObject.tr``, which never
+   sees the HamQ catalogs).
 f. Unused catalog keys are reported as a warning; with ``HAMQ_STRICT_I18N=1`` they fail.
 
 While modules are being written in parallel, tests for other agents' files may fail;
@@ -45,12 +51,26 @@ from hamq.core.i18n import latin_to_cyrillic, load_catalog, load_problems
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_DIR = REPO_ROOT / "hamq"
 CATALOG_DIR = PACKAGE_DIR / "i18n" / "sr_Latn"
+
+
+def catalog_files(directory: Path) -> list[Path]:
+    """Catalog files in load order, selected exactly as the runtime loader selects them."""
+    try:
+        return [directory / name for name in i18n._catalog_file_names(directory)]
+    except OSError:
+        return []
+
+
 SOURCE_FILES = sorted(PACKAGE_DIR.rglob("*.py"))
-CATALOG_FILES = sorted(CATALOG_DIR.glob("*.json"))
+CATALOG_FILES = catalog_files(CATALOG_DIR)
 STRICT = os.environ.get("HAMQ_STRICT_I18N", "").strip() == "1"
 
 TR_FUNCTIONS = ("tr", "tr_noop")
-QT_APPLICATION_CLASSES = frozenset({"QCoreApplication", "QGuiApplication", "QApplication"})
+# QgsApplication derives from QApplication: its translate() is QCoreApplication.translate().
+QT_APPLICATION_CLASSES = frozenset(
+    {"QCoreApplication", "QGuiApplication", "QApplication", "QgsApplication"}
+)
+QT_APPLICATION_OBJECTS = frozenset({"qApp"})  # the Qt5 global application object
 QT_TRANSLATION_MARKERS = frozenset(
     {
         "QT_TR_NOOP",
@@ -155,6 +175,9 @@ class _Visitor(ast.NodeVisitor):
         self._scopes: list[str] = []  # function names, "<lambda>", "<class>"
         self._classes: list[str] = []
         self._aliases = {name: name for name in TR_FUNCTIONS}
+        # other names of Qt application classes / objects and QObject in this file:
+        # 'QCA' -> 'QCoreApplication', 'app' -> 'QgsApplication.instance()'
+        self._qt_aliases: dict[str, str] = {}
 
     # --- helpers
     def _error(self, node: ast.AST, message: str) -> None:
@@ -166,6 +189,38 @@ class _Visitor(ast.NodeVisitor):
     def _at_import_time(self) -> bool:
         return all(scope == "<class>" for scope in self._scopes)
 
+    def _qt_name(self, node: ast.AST) -> str:
+        """Qt class or object ``node`` stands for, aliases resolved: ``QtCore.QCoreApplication``
+        -> 'QCoreApplication', ``QgsApplication.instance()`` -> 'QgsApplication.instance()'."""
+        if isinstance(node, ast.Name):
+            return self._qt_aliases.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "instance"
+        ):
+            owner = self._qt_name(node.func.value)
+            if owner in QT_APPLICATION_CLASSES:
+                return f"{owner}.instance()"
+        return ""
+
+    @staticmethod
+    def _is_application(name: str) -> bool:
+        return (
+            name in QT_APPLICATION_CLASSES
+            or name in QT_APPLICATION_OBJECTS
+            or name.endswith(".instance()")
+        )
+
+    def _record_qt_alias(self, targets: list[ast.expr], value: ast.AST) -> None:
+        owner = self._qt_name(value)
+        if owner == "QObject" or self._is_application(owner):
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    self._qt_aliases[target.id] = owner
+
     # --- scopes
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
@@ -174,6 +229,17 @@ class _Visitor(ast.NodeVisitor):
                 self._qt(node, f"imports {alias.name}, a Qt translation marker; use tr_noop()")
             if module.rsplit(".", 1)[-1] == "i18n" and alias.name in TR_FUNCTIONS and alias.asname:
                 self._aliases[alias.asname] = alias.name
+            if alias.asname and (alias.name == "QObject" or self._is_application(alias.name)):
+                self._qt_aliases[alias.asname] = alias.name
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self._record_qt_alias(node.targets, node.value)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self._record_qt_alias([node.target], node.value)
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -257,16 +323,33 @@ class _Visitor(ast.NodeVisitor):
             )
         elif kind == "tr_noop":
             self._error(node, "tr_noop() marks a text for translation; pass a string literal")
+        elif isinstance(arg, ast.Subscript):
+            base = arg.value
+            while isinstance(base, ast.Subscript):
+                base = base.value
+            if not isinstance(base, (ast.Name, ast.Attribute)):  # ("Yes", "No")[flag]
+                self._error(
+                    node,
+                    f"{name} argument indexes a {type(base).__name__}, whose texts are never "
+                    "checked against the catalog; mark them with tr_noop() in a named table "
+                    "and pass TABLE[key]",
+                )
 
     # --- rule e
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        owner = _tail_name(node.value)
-        if node.attr == "translate" and owner in QT_APPLICATION_CLASSES:
+        owner = self._qt_name(node.value)
+        if node.attr == "translate" and self._is_application(owner):
             self._qt(node, f"uses {owner}.translate(); use tr() from hamq.core.i18n")
-        elif node.attr == "tr" and (owner == "QObject" or owner in QT_APPLICATION_CLASSES):
+        elif node.attr == "tr" and (owner == "QObject" or self._is_application(owner)):
             self._qt(node, f"uses {owner}.tr(); use tr() from hamq.core.i18n")
-        elif node.attr == "tr" and isinstance(node.value, ast.Call) and owner == "super":
+        elif (
+            node.attr == "tr"
+            and isinstance(node.value, ast.Call)
+            and _tail_name(node.value) == "super"
+        ):
             self._qt(node, "calls super().tr(), Qt's QObject.tr(); use tr() from hamq.core.i18n")
+        elif node.attr in QT_TRANSLATION_MARKERS:
+            self._qt(node, f"uses {node.attr}, a Qt translation marker; use tr_noop()")
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -519,7 +602,7 @@ def test_catalog_keys_are_used(path):  # rule f
 
 
 def test_runtime_loader_agrees_with_the_guard(monkeypatch):
-    monkeypatch.setattr(i18n, "_problems", [])
+    monkeypatch.setattr(i18n, "_problems", None)
     assert load_catalog(CATALOG_DIR) == merged_catalog()
     if all(read_catalog(path).readable for path in CATALOG_FILES):
         conflicts = [problem for problem in load_problems() if "differs" in problem]
@@ -560,6 +643,15 @@ FLAGGED = [
         'def f(title=tr("Statistics")):\n    return title\n', "import time", id="default-arg"
     ),
     pytest.param('LABELS = [tr(x) for x in ("a", "b")]\n', "import time", id="comprehension"),
+    # a literal container indexed at the call: its texts are never checked against the catalog
+    pytest.param(
+        'def f(flag):\n    return tr(("Yes", "No")[flag])\n', "indexes a Tuple", id="tuple-index"
+    ),
+    pytest.param(
+        'def f(key):\n    return tr({"a": "Yes"}[key])\n', "indexes a Dict", id="dict-index"
+    ),
+    pytest.param('def f():\n    return tr("Yes"[:2])\n', "indexes a Constant", id="sliced-literal"),
+    pytest.param("def f(key):\n    return tr(labels()[key])\n", "indexes a Call", id="call-index"),
 ]
 
 
@@ -575,6 +667,8 @@ ALLOWED = [
     pytest.param('LABELS = {"total": tr_noop("Total QSOs")}\n', id="noop-module-level"),
     pytest.param("def f(key):\n    return tr(LABELS[key])\n", id="subscript"),
     pytest.param("def f(i):\n    return tr(LABELS[i + 1])\n", id="computed-index"),
+    pytest.param("def f(key, i):\n    return tr(LABELS[key][i])\n", id="nested-subscript"),
+    pytest.param("def f(self, key):\n    return tr(self.LABELS[key])\n", id="attribute-table"),
     pytest.param("def f(entry):\n    return tr(entry.text)\n", id="attribute"),
     pytest.param("def f(text):\n    return tr(text)\n", id="name"),
     pytest.param("def tr(text):\n    return _translator.translate(text.strip())\n", id="def-tr"),
@@ -640,6 +734,36 @@ def _qt(source: str) -> list[str]:
             '        return self.tr("Settings")\n',
             id="self-tr-base-without-tr",
         ),
+        # review findings: QgsApplication is a QApplication, aliases, instance(), qApp
+        pytest.param(
+            'def f():\n    return QgsApplication.translate("HamQ", "Veza")\n',
+            id="qgsapplication-translate",
+        ),
+        pytest.param('def f():\n    return QgsApplication.tr("Veza")\n', id="qgsapplication-tr"),
+        pytest.param(
+            "from qgis.PyQt.QtCore import QCoreApplication as QCA\n\n\n"
+            'def f():\n    return QCA.translate("HamQ", "Veza")\n',
+            id="aliased-application",
+        ),
+        pytest.param(
+            "from qgis.PyQt.QtCore import QObject as Base\n\n\n"
+            'def f():\n    return Base.tr("Veza")\n',
+            id="aliased-qobject",
+        ),
+        pytest.param(
+            'def f():\n    return QCoreApplication.instance().translate("HamQ", "Veza")\n',
+            id="instance-translate",
+        ),
+        pytest.param(
+            'def f():\n    return QgsApplication.instance().tr("Veza")\n', id="instance-tr"
+        ),
+        pytest.param(
+            "def f():\n    app = QgsApplication.instance()\n"
+            '    return app.translate("HamQ", "Veza")\n',
+            id="instance-variable",
+        ),
+        pytest.param('def f():\n    return qApp.translate("HamQ", "Veza")\n', id="qapp"),
+        pytest.param('X = QtCore.QT_TRANSLATE_NOOP("HamQ", "Veza")\n', id="qualified-marker"),
     ],
 )
 def test_scanner_flags_qt_translation_api(source):
@@ -666,7 +790,37 @@ def test_scanner_flags_qt_translation_api(source):
         ),
         pytest.param("def f(text, table):\n    return text.translate(table)\n", id="str-translate"),
         pytest.param("class A(A):\n    def f(self):\n        return 1\n", id="self-inheriting"),
+        pytest.param(
+            "def f():\n    return QgsApplication.instance().processingRegistry()\n",
+            id="application-instance",
+        ),
+        pytest.param(
+            "from qgis.core import QgsApplication as App\n\n\ndef f():\n    return App.locale()\n",
+            id="aliased-application-locale",
+        ),
+        pytest.param(
+            "def f(app, table):\n    return app.translate(table)\n", id="unrelated-translate"
+        ),
     ],
 )
 def test_scanner_allows_hamq_translation(source):
     assert _qt(source) == []
+
+
+def test_guard_checks_the_files_the_runtime_loads(tmp_path, monkeypatch):
+    # Review finding: the guard globbed '*.json' (case-sensitive, dotfiles included) while
+    # the runtime loads '*.json' in any case and skips hidden files.
+    monkeypatch.setattr(i18n, "_problems", None)
+    (tmp_path / "b.json").write_text('{"B": "Be"}', encoding="utf-8")
+    (tmp_path / "A_UPPER.JSON").write_text('{"Upper": "Gornji"}', encoding="utf-8")
+    (tmp_path / "c.Json").write_text('{"C": "Ce"}', encoding="utf-8")
+    (tmp_path / ".hidden.json").write_text('{"Hidden": "Skriven"}', encoding="utf-8")
+    (tmp_path / "notes.txt").write_text('{"Notes": "Beleške"}', encoding="utf-8")
+    (tmp_path / "folder.json").mkdir()
+    files = catalog_files(tmp_path)
+    assert [path.name for path in files] == ["A_UPPER.JSON", "b.json", "c.Json"]
+    merged: dict[str, str] = {}
+    for path in files:
+        merged.update(json.loads(path.read_text(encoding="utf-8")))
+    assert load_catalog(tmp_path) == merged
+    assert catalog_files(tmp_path / "missing") == []

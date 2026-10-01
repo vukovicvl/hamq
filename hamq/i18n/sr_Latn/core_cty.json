@@ -2,6 +2,7 @@
   "Further warnings not listed: {count}": "Broj upozorenja koja nisu prikazana: {count}",
   "cty.csv could not be read, DXCC codes are not available: {error}": "cty.csv nije moguće pročitati, DXCC brojevi nisu dostupni: {error}",
   "cty.csv line {line}: invalid row skipped": "cty.csv red {line}: neispravan zapis je preskočen",
+  "cty.csv: entities without a DXCC code: {count}": "cty.csv: entiteti bez DXCC broja: {count}",
   "cty.dat contains no entities": "cty.dat ne sadrži nijedan entitet",
   "cty.dat line {line}: entity {name} is not closed with ';'": "cty.dat red {line}: entitet {name} nije zatvoren znakom ';'",
   "cty.dat line {line}: invalid entity header, entity skipped": "cty.dat red {line}: neispravno zaglavlje entiteta, entitet je preskočen",

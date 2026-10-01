@@ -2,7 +2,7 @@
 # release of 15 September 2026 (version marker VER20260915),
 # downloaded 2026-09-29 from https://www.country-files.com/bigcty/cty.dat
 # Country files by Jim Reisert AD1C, https://www.country-files.com - thank you!
-# 21 of 346 entities, prefix lists trimmed, otherwise unchanged. For tests only;
+# 20 of 346 entities, prefix lists trimmed, otherwise unchanged. For tests only;
 # HamQ downloads the full file at runtime. Licence: see README.md in this folder.
 Montenegro:               15:  28:  EU:   42.50:   -19.28:    -1.0:  4O:
     4O;
@@ -44,10 +44,6 @@ Sicily:                   15:  28:  EU:   37.50:   -14.00:    -1.0:  *IT9:
     =II9HQ,=IT9ACJ/I/BN,
     =IT9HBS/LH,
     =IW0HBY/9;
-Japan:                    25:  45:  AS:   36.40:  -138.38:    -9.0:  JA:
-    7J,7K,7L,7M,7N,8J,8K,8L,8M,8N,JA,JE,JF,JG,JH,JI,JJ,JK,JL,JM,JN,JO,JP,JQ,JR,JS,=7N2DAB/LH,
-    =JD1BPS/1,
-    =JQ2UXA/YL;
 United States:            05:  08:  NA:   37.60:    91.87:     5.0:  K:
     AA,AB,AC,AD,AE,AF,AG,AI,AJ,AK,K,N,W,=N2NL/MM(7),=NQ4I/AM,=YL3IZ/MM,
     K0(4)[7],

@@ -200,7 +200,8 @@ class PlainMapping(Mapping):
 
 
 # --- a realistic small log ------------------------------------------------------------------
-# Station YU1XX in Belgrade (KN04ft). Distances are great-circle km between grid centres.
+# Station YU1XX in Belgrade (KN04ft). Distances are great-circle km between grid centres
+# (hamq.core.geo.distance_km of the maidenhead.to_latlon centres, rounded to 0.1 km).
 # DXCC codes are ADIF entity codes; the JA1XYZ row came live from WSJT-X before cty.csv was
 # downloaded, so it has a country name but no code.
 LOG = [
@@ -325,7 +326,7 @@ LOG = [
         dxcc=230,
         country="Fed. Rep. of Germany",
         cont="EU",
-        distance_km=1003.2,
+        distance_km=1014.1,  # centre of the square JO62, not of JO62qm
     ),
     row(
         call="JA1XYZ",
@@ -336,7 +337,7 @@ LOG = [
         gridsquare="PM95",
         country="Japan",
         cont="AS",
-        distance_km=9180.0,
+        distance_km=9155.6,  # centre of the square PM95, not of PM95tq
         source="wsjtx",
     ),
     row(
@@ -987,7 +988,7 @@ def test_datetime_values_are_converted_to_utc(value, expected):
         (datetime(2026, 9, 15, 20, 45), OFFSET, 2),
         (datetime(2026, 9, 15, 13, 45), OFFSET, -5),
         # a time zone (Asia/Tokyo, UTC+9): 03:45 the next day there is 18:45 UTC
-        # (checked with a real QTimeZone on QGIS 4.2)
+        # (checked with a real QTimeZone on QGIS 3.44, 4.0 and 4.2)
         (datetime(2026, 9, 16, 3, 45), TIME_ZONE, 9),
         # stored without a zone: the fields are UTC, not shifted by the computer's zone
         (datetime(2026, 9, 15, 18, 45), LOCAL, 0),

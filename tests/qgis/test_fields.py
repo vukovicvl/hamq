@@ -160,6 +160,66 @@ def test_python_datetime_attribute_is_rejected_by_writer(tmp_gpkg):
     assert not accepted
 
 
+def _add_through_provider(path: str, value) -> tuple[bool, list]:
+    """Insert one feature with ``t = value``, return (ok, stored t values).
+
+    The GeoPackage layer is created empty first, then written through
+    ``layer.dataProvider().addFeatures()`` (the OGR provider), not the file
+    writer: the insert path the pyqgis-plugin skill gives gpkg.py (M2).
+    """
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "GPKG"
+    options.layerName = "qso"
+    writer = QgsVectorFileWriter.create(
+        path,
+        make_fields([("t", "datetime")]),
+        compat.WKB_POINT,
+        QgsCoordinateReferenceSystem("EPSG:4326"),
+        QgsProject.instance().transformContext(),
+        options,
+    )
+    assert writer.hasError() == compat.WRITER_NO_ERROR, writer.errorMessage()
+    del writer
+    uri = f"{path}|layername=qso"
+    layer = QgsVectorLayer(uri, "qso", "ogr")
+    assert layer.isValid()
+    assert layer.fields().names() == ["fid", "t"]
+    feature = QgsFeature(layer.fields())
+    feature.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(20.4612, 44.8125)))
+    feature.setAttributes([None, value])
+    ok, _added = layer.dataProvider().addFeatures([feature])
+    del layer
+    stored = [f["t"] for f in QgsVectorLayer(uri, "qso", "ogr").getFeatures()]
+    return ok, stored
+
+
+def test_provider_add_features_stores_qdatetime(tmp_gpkg):
+    ok, stored = _add_through_provider(tmp_gpkg, to_qdatetime(QSO_TIME))
+    assert ok
+    assert len(stored) == 1
+    assert isinstance(stored[0], QDateTime)
+    assert from_qdatetime(stored[0]) == QSO_TIME
+
+
+def test_provider_add_features_never_stores_a_python_datetime(tmp_gpkg):
+    """Why to_qdatetime() exists on the provider path (gpkg.insert_qsos) too.
+
+    The OGR provider does not convert a Python ``datetime``. QGIS 3.34, 3.40, 3.44
+    and 4.0 report success and silently store NULL; QGIS 4.2 rejects the feature
+    ("wrong data type ... expected QDateTime"). Either way the time is lost.
+    """
+    ok, stored = _add_through_provider(tmp_gpkg, QSO_TIME)
+    if ok:
+        assert len(stored) == 1
+        assert is_null(stored[0])
+    else:
+        assert stored == []
+    if compat.QGIS_VERSION_INT < 40100:
+        assert ok  # silent data loss: success reported, NULL stored
+    elif compat.QGIS_VERSION_INT >= 40200:
+        assert not ok
+
+
 def test_to_qdatetime_is_utc():
     value = to_qdatetime(QSO_TIME)
     assert value.isValid()

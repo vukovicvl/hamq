@@ -3,3 +3,5 @@
 Everything here is asynchronous (Qt sockets and ``QgsNetworkAccessManager``)
 so the QGIS user interface never blocks.
 """
+
+from __future__ import annotations

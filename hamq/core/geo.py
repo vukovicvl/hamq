@@ -65,10 +65,10 @@ def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     is undefined: numerically identical points give ``0.0``, but one point written
     two ways (longitudes +180 and -180 or 360 apart, a pole with two different
     longitudes) gives an arbitrary value. For antipodal points every direction is a
-    shortest path and the value is arbitrary too. At a pole, bearings are measured as if
-    standing on meridian ``lon1`` right next to the pole (so from the North Pole 0
-    points toward ``lon1 + 180`` and 180 toward ``lon1``); :func:`destination` uses
-    the same convention.
+    shortest path and the value is arbitrary too. At a pole, bearings are measured
+    as if standing on meridian ``lon1`` right next to the pole (so from the North
+    Pole 0 points toward ``lon1 + 180`` and 180 toward ``lon1``); :func:`destination`
+    uses the same convention.
     """
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dl = math.radians(lon2 - lon1)

@@ -5,10 +5,18 @@ before; QGIS 4 removed the ``QVariant`` constructor. The right type values are
 resolved once in :mod:`hamq.qgis_io.compat`; this module maps HamQ field kinds
 (the ``kind`` strings used by ``core.qso.QSO_FIELDS``) to them.
 
-Datetime attributes must be set as ``QDateTime``: on every supported version a
-Python ``datetime`` set with ``QgsFeature.setAttributes`` stays a Python object
-and ``QgsVectorFileWriter`` / the OGR provider reject it ("Could not convert
-value"). Use :func:`to_qdatetime` when writing and :func:`from_qdatetime` when
+Datetime attributes must be set as ``QDateTime``. A Python ``datetime`` set with
+``QgsFeature.setAttributes`` (or ``feature[name] = ...``) stays a Python object
+that QGIS does not convert:
+
+* ``QgsVectorFileWriter.addFeature`` rejects the feature ("Could not convert
+  value") on every supported version;
+* the OGR provider (``layer.dataProvider().addFeatures``) is worse: QGIS 3.34,
+  3.40, 3.44 and 4.0 report success and silently store NULL, only QGIS 4.2
+  rejects the feature ("wrong data type ... expected QDateTime").
+
+Always convert with :func:`to_qdatetime` when writing (a UTC ``QDateTime`` is
+stored as ``...Z`` and reads back as UTC) and use :func:`from_qdatetime` when
 reading.
 """
 

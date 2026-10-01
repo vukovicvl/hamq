@@ -17,6 +17,9 @@
 # Docker targets mount the repository read-only, run as the calling user with
 # HOME=/tmp, PYTHONDONTWRITEBYTECODE=1 and -p no:cacheprovider, so no files are
 # written into the repository. Qt runs with the offscreen platform (no X server).
+# HAMQ_RIGCTLD / HAMQ_ROTCTLD (host:port of real Hamlib daemons, optional tests in
+# test_hamlib_client.py) are passed into the containers when set; use an address
+# the container can reach, e.g. the IP of a hamq/hamlib-dummy container.
 #
 # Examples:
 #   scripts/test_qgis.sh local -k compat
@@ -79,6 +82,7 @@ run_docker() {
         -e PYTHONDONTWRITEBYTECODE=1 \
         -e QT_QPA_PLATFORM=offscreen \
         -e XDG_RUNTIME_DIR=/tmp/xdg \
+        -e HAMQ_RIGCTLD -e HAMQ_ROTCTLD \
         -v "$ROOT":/app:ro \
         -w /app \
         "$image" \

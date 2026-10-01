@@ -1,0 +1,16 @@
+ADIF Export from xlog Version 2.0.11
+Copyright (C) 2012 xlog developers <xlog-devel@example.org>
+Internet:  http://savannah.nongnu.org/projects/Xlog
+
+Date of export: 27 Sep 2026 07:45:10
+Callsign: YU1QQ
+Locator: KN04ft
+
+<ADIF_VER:5>2.2.7
+<EOH>
+<QSO_DATE:8>20260926 <TIME_ON:4>1502 <CALL:5>K5XYZ <FREQ:2>21 <MODE:3>SSB <RST_SENT:2>59 <RST_RCVD:2>59 <Seq (S):3>001 <Seq (R):3>792 
+<EOR>
+<QSO_DATE:8>20260926 <TIME_ON:4>1511 <CALL:6>JA1XYZ <FREQ:2>21 <MODE:3>SSB <RST_SENT:2>59 <RST_RCVD:2>57 <Seq (S):3>002 <Seq (R):4>1043 
+<EOR>
+<QSO_DATE:8>20260927 <TIME_ON:6>063000 <TIME_OFF:6>063412 <CALL:6>DL7XYZ <FREQ:9>14.070150 <MODE:5>PSK31 <RST_SENT:3>599 <RST_RCVD:3>599 <NAME:4>Hans <QTH:6>Berlin <GRIDSQUARE:6>JO62qm 
+<EOR>

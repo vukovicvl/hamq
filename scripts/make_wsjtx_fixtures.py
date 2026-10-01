@@ -10,10 +10,12 @@ byte for byte.
     python3 scripts/make_wsjtx_fixtures.py --check    # compare only; exit 1 on any difference
     python3 scripts/make_wsjtx_fixtures.py --out DIR  # write (or --check) another directory
 
-    # Rebuild every packet with Qt's own QDataStream (PyQt5 or PyQt6 through qgis.PyQt)
-    # and compare with the hamq encoder. QGIS's Python directory is /usr/share/qgis/python
-    # for distribution packages and the qgis/qgis images, and /usr/local/share/qgis/python
-    # for QGIS built from source (for example the camptocamp/qgis-server images):
+    # Rebuild every packet with Qt's own QDataStream and text conversion (PyQt5 or PyQt6
+    # through qgis.PyQt) and compare with the hamq encoder; also compare hamq's UTF-8 and
+    # Latin-1 conversion and the ADIF lengths with Qt's for a few texts. QGIS's Python
+    # directory is /usr/share/qgis/python for distribution packages and the qgis/qgis
+    # images, and /usr/local/share/qgis/python for QGIS built from source (for example
+    # the camptocamp/qgis-server images):
     PYTHONPATH=/usr/share/qgis/python QT_QPA_PLATFORM=offscreen \\
         python3 scripts/make_wsjtx_fixtures.py --verify-qt
 
@@ -77,9 +79,14 @@ STATUS = {
 TRUNCATE_IN = "de_call"  # truncated_status.bin ends in the middle of this string
 
 
+def qstring_size(value: str) -> int:
+    """QString::size(): UTF-16 code units, so a character above U+FFFF counts 2."""
+    return sum(2 if ord(char) > 0xFFFF else 1 for char in value)
+
+
 def adif_field(name: str, value: str) -> str:
     """ADIF field as LogBook::QSOToADIF writes it: the length is QString::size()."""
-    return f"<{name}:{len(value)}>{value}"
+    return f"<{name}:{qstring_size(value)}>{value}"
 
 
 def adif_record(fields: list[tuple[str, str]]) -> str:
@@ -352,6 +359,7 @@ python3 scripts/make_wsjtx_fixtures.py            # regenerate
 python3 scripts/make_wsjtx_fixtures.py --check    # verify, write nothing
 PYTHONPATH=/usr/share/qgis/python QT_QPA_PLATFORM=offscreen \\
     python3 scripts/make_wsjtx_fixtures.py --verify-qt   # rebuild with Qt's QDataStream
+# QGIS built from source (e.g. camptocamp/qgis-server): /usr/local/share/qgis/python
 ```
 
 Scenario: YU1ABC (KN04ft, Belgrade) works YU7ABC (JN95) with FT8 on 40 m on
@@ -384,11 +392,13 @@ with a higher one; a logger that only listens therefore sees schema 2.
 WSJT-X builds the ADIF record with `QString::toLatin1()` (`LogBook::QSOToADIF`), so the
 "utf8" field really carries Latin-1: `Jürgen` arrives as the byte `0xFC`, and letters
 that are not in Latin-1, including Serbian `č ć š ž đ Č Ć Š Ž Đ`, are replaced by `?`
-before sending. JTDX sends the record as UTF-8. Both count ADIF field lengths in
-characters. `decode()` reads UTF-8 and falls back to Latin-1, so both arrive intact;
-a Serbian name typed in WSJT-X arrives as `?or?e` and cannot be recovered. The
-QSO Logged message (type 5) always uses UTF-8. A capture from WSJT-X 2.7.0 confirms the
-WSJT-X part: `captured/wsjtx-2.7.0_logged_adif.bin` carries
+before sending. JTDX sends the record as UTF-8. Both write each ADIF field length as
+`QString::size()`, in UTF-16 code units: one per character, but two for a character
+above U+FFFF such as an emoji, which WSJT-X sends as `??`. `decode()` reads UTF-8 and
+falls back to Latin-1, so both arrive intact; a Serbian name typed in WSJT-X arrives
+as `?or?e` and cannot be recovered. The QSO Logged message (type 5) always uses UTF-8.
+A capture from WSJT-X 2.7.0 confirms the WSJT-X part:
+`captured/wsjtx-2.7.0_logged_adif.bin` carries
 `<comment:15>?or?e 73 J\\xfcrgen` for the comment "Đorđe 73 Jürgen". The JTDX part comes
 from the JTDX source (`logqso.cpp`: `myadif.trimmed().toUtf8()`) and was not captured.
 
@@ -419,16 +429,36 @@ captured.
 
 # --- Qt cross-check ---------------------------------------------------------------------------
 
+# Texts whose conversion hamq must do exactly as Qt: Latin-1, letters outside Latin-1
+# (Serbian Latin and Cyrillic) and characters above U+FFFF, which are two UTF-16 code units
+TEXT_PROBES = ("Jürgen", "Đorđe Ђорђе čćšž", "73 \U0001f4fb", "\U0001f4fb\U0001f4fb", "")
+
+
+def qt_encode(text: str, latin1: bool = False) -> bytes:
+    """QString::toUtf8() / toLatin1(), converted by Qt itself.
+
+    Qt 5 has QTextCodec, Qt 6 QStringEncoder. For Latin-1 both work one UTF-16 code unit
+    at a time, like QString::toLatin1().
+    """
+    try:
+        from qgis.PyQt.QtCore import QTextCodec  # Qt 5
+    except ImportError:
+        from qgis.PyQt.QtCore import QStringConverter, QStringEncoder  # Qt 6
+
+        encoding = QStringConverter.Encoding.Latin1 if latin1 else QStringConverter.Encoding.Utf8
+        return bytes(QStringEncoder(encoding).encode(text))
+    return bytes(QTextCodec.codecForName(b"ISO-8859-1" if latin1 else b"UTF-8").fromUnicode(text))
+
 
 def qt_packets() -> dict[str, bytes]:
     """The same packets built with Qt's QDataStream, mirroring the WSJT-X C++ statements."""
     from qgis.PyQt.QtCore import QByteArray, QDataStream, QDate, QDateTime, QIODevice, Qt, QTime
 
-    def ba(value: str | None, codec: str = "utf-8") -> QByteArray:
+    def ba(value: str | None, latin1: bool = False) -> QByteArray:
         # QString::toUtf8() / toLatin1(): a null QString gives a null QByteArray
         if value is None:
             return QByteArray()
-        return QByteArray(value.encode(codec, "replace"))
+        return QByteArray(qt_encode(value, latin1))
 
     def qdatetime(value: datetime) -> QDateTime:
         date = QDate(value.year, value.month, value.day)
@@ -503,9 +533,9 @@ def qt_packets() -> dict[str, bytes]:
         out.writeBool(j["tx_first"])
         return msg.value()
 
-    def logged_adif(text: str, codec: str) -> bytes:
+    def logged_adif(text: str, latin1: bool) -> bytes:
         msg = Builder(12, CLIENT, 2)  # MessageClient::logged_ADIF
-        msg.out << ba(text, codec)
+        msg.out << ba(text, latin1)
         return msg.value()
 
     ql = Builder(5, CLIENT, 2)  # MessageClient::qso_logged
@@ -524,8 +554,8 @@ def qt_packets() -> dict[str, bytes]:
         "status_ft8.bin": st.value(),
         "status_jtdx.bin": jtdx_status(),
         "close.bin": Builder(6, CLIENT, 2).value(),  # MessageClient::impl::closedown
-        "logged_adif.bin": logged_adif(ADIF_TEXT, "utf-8"),
-        "logged_adif_latin1.bin": logged_adif(LATIN1_ADIF_TEXT, "latin-1"),
+        "logged_adif.bin": logged_adif(ADIF_TEXT, latin1=False),
+        "logged_adif_latin1.bin": logged_adif(LATIN1_ADIF_TEXT, latin1=True),
         "qso_logged.bin": ql.value(),
     }
 
@@ -542,6 +572,15 @@ def verify_qt(fixtures: dict[str, bytes]) -> bool:
         same = data == fixtures[name]
         ok &= same
         print(f"{'same as Qt' if same else 'DIFFERS from Qt'}  {name} ({len(data)} bytes)")
+    for text in TEXT_PROBES:
+        latin1 = qt_encode(text, latin1=True)
+        same = (
+            Writer().utf8(text).getvalue()[4:] == qt_encode(text)
+            and Writer().latin1(text).getvalue()[4:] == latin1
+            and qstring_size(text) == len(latin1)  # toLatin1() gives a byte per code unit
+        )
+        ok &= same
+        print(f"{'same as Qt' if same else 'DIFFERS from Qt'}  text {text!a}")
     return ok
 
 

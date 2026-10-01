@@ -10,6 +10,7 @@ encoder must both match.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import os
 import random
 import struct
@@ -72,6 +73,19 @@ KEYS = {
     "close": ["type", "client", "schema"],
     "logged_adif": ["type", "client", "schema", "adif"],
     "other": ["type", "code", "client", "schema"],
+}
+# The type of every non-string value in a decode() result; all other keys hold str or None
+BOOL_KEYS = {"tx_enabled", "transmitting", "decoding", "tx_watchdog", "fast_mode", "tx_first"}
+INT_BITS = {  # integer keys and their width on the wire (all unsigned)
+    "schema": 32,
+    "code": 32,
+    "max_schema": 32,
+    "freq_hz": 64,
+    "rx_df": 32,
+    "tx_df": 32,
+    "special_op_mode": 8,
+    "frequency_tolerance": 32,
+    "tr_period": 32,
 }
 
 # --- the fixture scenario: YU1ABC (KN04ft) works YU7ABC (JN95) on 40 m FT8 -----------------
@@ -378,20 +392,37 @@ def status_wire_order(client: str | None) -> list[str]:
 
 
 def check_message(msg: object) -> None:
-    """Shape every decode() result must have (used by the fuzz tests)."""
+    """Shape every decode() result must have (used by the prefix and fuzz tests)."""
     if msg is None:
         return
-    assert isinstance(msg, dict)
+    assert type(msg) is dict
     assert msg["schema"] in (2, 3)
-    assert msg["client"] is None or isinstance(msg["client"], str)
     keys = list(msg)
     if msg["type"] == "status":
         assert keys[:6] == STATUS_MANDATORY
         optional = status_wire_order(msg["client"])
         assert keys[6:] == optional[: len(keys) - 6]  # a prefix, in wire order
-        assert isinstance(msg["freq_hz"], int)
     else:
         assert keys == KEYS[msg["type"]]
+    for key, value in msg.items():  # exact types: False == 0 would hide a bool read as int
+        if key in BOOL_KEYS:
+            assert type(value) is bool, key
+        elif key in INT_BITS:
+            assert type(value) is int and 0 <= value < 2 ** INT_BITS[key], key
+        else:
+            assert value is None or type(value) is str, key
+    assert type(msg["type"]) is str
+
+
+def typed(msg: object) -> object:
+    """A decode() result with every value paired with its type, for exact comparisons.
+
+    ``==`` alone treats ``False`` as ``0`` and ``True`` as ``1``, so a bool field that
+    came back as an int would still compare equal.
+    """
+    if not isinstance(msg, dict):
+        return msg
+    return {key: (type(value), value) for key, value in msg.items()}
 
 
 # --- constants and the Writer primitives ----------------------------------------------------
@@ -465,6 +496,7 @@ def test_writer_header_and_chaining():
         ("u64", 2**64),
         ("i64", 2**63),
         ("qdatetime", datetime(2026, 9, 15, 18, 46, 15)),  # naive
+        ("utf8", "\ud800"),  # a lone surrogate is not text: UnicodeEncodeError
     ],
 )
 def test_writer_rejects_out_of_range_values(method, value):
@@ -603,7 +635,7 @@ def test_fixture_directory_has_every_expected_packet():
 
 @pytest.mark.parametrize("name", sorted(EXPECTED))
 def test_fixture_decodes_to_expected(name):
-    assert decode(fixture(name)) == EXPECTED[name]
+    assert typed(decode(fixture(name))) == typed(EXPECTED[name])
 
 
 @pytest.mark.parametrize("name", sorted(ENCODED))
@@ -638,7 +670,7 @@ def test_captured_directory_has_every_expected_packet():
 
 @pytest.mark.parametrize("name", sorted(CAPTURED_EXPECTED))
 def test_captured_wsjtx_packet_decodes(name):
-    assert decode(fixture(name)) == CAPTURED_EXPECTED[name]
+    assert typed(decode(fixture(name))) == typed(CAPTURED_EXPECTED[name])
 
 
 @pytest.mark.parametrize("name", sorted(CAPTURED_EXPECTED))
@@ -722,7 +754,7 @@ def test_round_trip_non_default_status_values():
         "tx_message": "CQ YU1ABC KN04",
     }
     msg = decode(encode_status("WSJT-X", 2**64 - 1, "FT4", None, schema=3, **values))
-    assert msg == dict(
+    expected = dict(
         values,
         type="status",
         client="WSJT-X",
@@ -731,6 +763,7 @@ def test_round_trip_non_default_status_values():
         mode="FT4",
         dx_call=None,
     )
+    assert typed(msg) == typed(expected)
 
 
 @pytest.mark.parametrize(
@@ -778,6 +811,38 @@ def test_wsjtx_latin1_record_loses_serbian_letters_before_sending():
     assert decode(packet)["adif"] == "<name:5>?or?e <EOR>"  # what a real WSJT-X sends
 
 
+def test_latin1_converts_every_utf16_code_unit_like_qt():
+    # A QString holds UTF-16 and toLatin1() converts it unit by unit, so a character
+    # above U+FFFF (two units) becomes "??". Qt's own Latin-1 conversion gives these
+    # bytes in Qt 5.15.3, 5.15.15, 6.8.2 and 6.10.2.
+    text = "Jürgen Đ \U0001f4fb"
+    assert Writer().latin1(text).getvalue() == bytes.fromhex("0000000b") + b"J\xfcrgen ? ??"
+    assert Writer().latin1("\U0001f4fb\U0001f4fb").getvalue() == bytes.fromhex("00000004") + b"????"
+    # WSJT-X writes <comment:5> for "73 📻" (QString::size()), and 5 characters arrive
+    packet = encode_logged_adif("WSJT-X", "<comment:5>73 \U0001f4fb <EOR>", latin1=True)
+    assert decode(packet)["adif"] == "<comment:5>73 ?? <EOR>"
+
+
+def load_fixture_script():
+    """scripts/make_wsjtx_fixtures.py as a module (importing it writes nothing)."""
+    spec = importlib.util.spec_from_file_location("make_wsjtx_fixtures", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_fixture_script_counts_adif_lengths_like_qstring_size(monkeypatch):
+    # LogBook::QSOToADIF writes QString::size(): UTF-16 code units, not code points or bytes
+    monkeypatch.setattr(sys, "path", list(sys.path))  # the script puts the repository first
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    script = load_fixture_script()
+    assert script.adif_field("name", "Jürgen") == "<name:6>Jürgen"
+    assert script.adif_field("name", "Đorđe") == "<name:5>Đorđe"
+    assert script.adif_field("comment", "73 \U0001f4fb") == "<comment:5>73 \U0001f4fb"
+    assert script.adif_field("rst_sent", "") == "<rst_sent:0>"
+
+
 @pytest.mark.parametrize("schema", [0, 1, 4, 5, 0xFFFFFFFF])
 def test_unsupported_schemas_are_ignored(schema):
     packet = Writer().header(HEARTBEAT, "WSJT-X", schema).u32(3).utf8("2.7.0").getvalue()
@@ -819,7 +884,7 @@ def test_jtdx_status_fixture_is_what_the_jtdx_code_writes():
 def test_jtdx_status_has_tx_first_and_no_special_op_mode(client, tx_first):
     # special_op_mode 1 would mean "NA VHF"; the last byte JTDX sends is tx_first
     msg = decode(jtdx_status_packet(client, tx_first))
-    assert msg == dict(STATUS_JTDX, client=client, tx_first=tx_first)
+    assert typed(msg) == typed(dict(STATUS_JTDX, client=client, tx_first=tx_first))
     assert list(msg) == STATUS_MANDATORY + JTDX_STATUS_OPTIONAL
     assert "special_op_mode" not in msg
 
@@ -837,7 +902,7 @@ def test_other_client_ids_use_the_wsjtx_status_layout(client):
 def test_bytes_after_jtdx_tx_first_are_ignored():
     # a WSJT-X-style tail (tolerance, T/R period, ...) after tx_first is not read
     tail = Writer().u32(0xFFFFFFFF).u32(0xFFFFFFFF).utf8("Default").utf8("CQ").getvalue()
-    assert decode(jtdx_status_packet() + tail) == STATUS_JTDX
+    assert typed(decode(jtdx_status_packet() + tail)) == typed(STATUS_JTDX)
 
 
 # --- robustness: truncation, trailing bytes, garbage -------------------------------------------
@@ -873,7 +938,7 @@ def test_status_prefixes_keep_whole_fields_only(name, status, optional):
         else:
             keys = STATUS_MANDATORY + optional[: len(whole) - 1]
             expected = {key: status[key] for key in keys}
-        assert decode(data[:n]) == expected, n
+        assert typed(decode(data[:n])) == typed(expected), n
 
 
 def test_heartbeat_prefixes_need_version_but_not_revision():
@@ -911,7 +976,7 @@ def test_other_needs_only_the_header():
 def test_trailing_bytes_are_ignored(name):
     data = fixture(name)
     for tail in (b"\x00", b"\xff" * 5, b"\x00\x00\x00\x03new fields"):
-        assert decode(data + tail) == ALL_EXPECTED[name]
+        assert typed(decode(data + tail)) == typed(ALL_EXPECTED[name])
 
 
 def test_huge_declared_lengths_return_none_fast_without_allocating():
@@ -972,8 +1037,9 @@ def test_non_bytes_input_returns_none(data):
 
 def test_bytes_like_input_is_accepted():
     data = fixture("status_ft8.bin")
-    assert decode(bytearray(data)) == STATUS_FT8
-    assert decode(memoryview(data)) == STATUS_FT8
+    assert typed(decode(bytearray(data))) == typed(STATUS_FT8)
+    assert typed(decode(memoryview(data))) == typed(STATUS_FT8)
+    assert typed(decode(memoryview(data + data)[: len(data)])) == typed(STATUS_FT8)
 
 
 def test_released_memoryview_returns_none():
@@ -982,18 +1048,54 @@ def test_released_memoryview_returns_none():
     assert decode(view) is None
 
 
-def test_bytes_subclasses_are_read_through_the_buffer_protocol():
-    class Odd(bytes):  # decode() reads the buffer, never methods a subclass overrides
-        def __bytes__(self) -> bytes:
-            raise RuntimeError("__bytes__ called")
+class Overrides:
+    """Methods a bytes or bytearray subclass can override; decode() must call none."""
 
-        def __len__(self) -> int:
-            raise RuntimeError("__len__ called")
+    def __buffer__(self, flags: int) -> memoryview:  # the buffer protocol, Python 3.12+
+        raise RuntimeError("__buffer__ called")
 
-        def __getitem__(self, index: object) -> bytes:
-            raise RuntimeError("__getitem__ called")
+    def __bytes__(self) -> bytes:
+        raise RuntimeError("__bytes__ called")
 
-    assert decode(Odd(fixture("status_ft8.bin"))) == STATUS_FT8
+    def __len__(self) -> int:
+        raise RuntimeError("__len__ called")
+
+    def __getitem__(self, index: object) -> bytes:
+        raise RuntimeError("__getitem__ called")
+
+    def __iter__(self) -> object:
+        raise RuntimeError("__iter__ called")
+
+
+class OddBytes(Overrides, bytes):
+    pass
+
+
+class OddBytearray(Overrides, bytearray):
+    pass
+
+
+@pytest.mark.parametrize("kind", [OddBytes, OddBytearray])
+def test_subclasses_are_read_without_calling_their_methods(kind):
+    # decode() copies the data with the built-in code of bytes / bytearray itself
+    assert typed(decode(kind(fixture("status_ft8.bin")))) == typed(STATUS_FT8)
+
+
+class ClaimsToBeBytes:
+    @property
+    def __class__(self) -> type:  # makes isinstance(obj, bytes) true
+        return bytes
+
+
+class ClassLookupFails:
+    @property
+    def __class__(self) -> type:  # isinstance() calls this and lets the error through
+        raise RuntimeError("__class__ looked up")
+
+
+@pytest.mark.parametrize("kind", [ClaimsToBeBytes, ClassLookupFails])
+def test_objects_that_only_claim_to_be_bytes_return_none(kind):
+    assert decode(kind()) is None
 
 
 def test_ten_thousand_random_byte_strings_never_raise():

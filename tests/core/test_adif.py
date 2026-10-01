@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import array
 import ast
 import json
 import math
@@ -27,6 +28,7 @@ from hamq.core.adif import (
     parse_qso_datetime,
     read_adi,
 )
+from hamq.core.maidenhead import to_locator
 from hamq.core.modes import display_mode
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,12 +90,23 @@ def test_decode_bytes(data, expected):
 def test_decode_bytes_accepts_bytes_like_and_never_raises():
     assert decode_bytes(bytearray(b"<EOR>")) == "<EOR>"
     assert decode_bytes(memoryview(b"<EOR>")) == "<EOR>"
+    assert decode_bytes(array.array("B", b"<EOR>")) == "<EOR>"
     assert decode_bytes(None) == ""
-    assert decode_bytes("﻿<EOR>") == "<EOR>"
+    assert decode_bytes("\ufeff<EOR>") == "<EOR>"
     rng = random.Random(7)
     for _ in range(300):
         data = bytes(rng.randrange(256) for _ in range(rng.randrange(40)))
         assert isinstance(decode_bytes(data), str)
+
+
+@pytest.mark.parametrize("value", [3, 2**20, -1, 1.5, [60, 69, 79, 82, 62], object()])
+def test_decode_bytes_rejects_what_is_not_bytes_like(value):
+    # a programmer error, not file content: bytes(3) would be three NUL characters and
+    # bytes(10**10) a 10 GB allocation (2**20 keeps this test cheap if that ever comes back)
+    with pytest.raises(TypeError):
+        decode_bytes(value)
+    with pytest.raises(TypeError):
+        parse_document(value)
 
 
 # --- structure: header, records, tags -----------------------------------------------------
@@ -180,6 +193,33 @@ def test_lt_inside_value_of_correct_length_is_kept(value):
     assert doc.warnings == []
 
 
+@pytest.mark.parametrize("value", ["ĐĐĐ <b>", "Čačak <br>", "Ђорђе <i>"])
+def test_lengthless_tag_in_a_non_ascii_value_is_no_reason_to_count_bytes(value):
+    # '<b>' has no length, so the characters swallow no tag and the value is not byte-counted
+    doc = parse_document(f"<COMMENT:{len(value)}>{value} <EOR>")
+    assert doc.records == [{"COMMENT": value}]
+    assert doc.warnings == []
+
+
+@pytest.mark.parametrize("size", [999, 1000, 1500, 12000, 123456])
+def test_long_values_are_read_exactly(size):
+    # lengths of four and more digits are read exactly (only absurd lengths are capped)
+    value = ("73 de YU1AB, " * (size // 13 + 1))[: size - 1] + "."
+    doc = parse_document(
+        f"<CALL:5>YU1AB <NOTES:{size}>{value} <BAND:3>20m <EOR>\n<CALL:5>YU2AB <EOR>"
+    )
+    assert doc.records == [{"CALL": "YU1AB", "NOTES": value, "BAND": "20m"}, {"CALL": "YU2AB"}]
+    assert doc.warnings == []
+
+
+def test_long_byte_counted_value_is_read_exactly():
+    value = "Đorđe Petrović, Čačak. " * 100  # 2300 characters, 2800 bytes
+    size = len(value.encode("utf-8"))
+    doc = parse_document(f"<NOTES:{size}>{value}<BAND:3>20m <EOR>")
+    assert doc.records == [{"NOTES": value.strip(), "BAND": "20m"}]
+    assert doc.warnings == ["Record 1: " + BYTES.format(field="NOTES")]
+
+
 def test_text_between_records_is_ignored():
     text = "junk <CALL:5>YU1AB <EOR> comment: next QSO\n\n<CALL:5>YU2AB <EOR> trailing text"
     doc = parse_document(text)
@@ -212,6 +252,22 @@ def test_slashes_right_after_a_value_still_warn():
     assert len(doc.warnings) == 1 and "COMMENT" in doc.warnings[0]
 
 
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [
+        ("<CALL:5>YU1AB <COMMENT:6>tnx 73<3 <EOR>", "tnx 73"),
+        ("<CALL:5>YU1AB <COMMENT:1>a<b and more <EOR>", "a"),
+        ("<CALL:5>YU1AB <COMMENT:4>bold</b> <EOR>", "bold"),
+        ("<CALL:5>YU1AB <COMMENT:3>see <http://x.y> <EOR>", "see"),
+    ],
+)
+def test_value_followed_by_a_lt_that_starts_no_tag_warns(text, value):
+    # a '<' only ends a value cleanly when it starts a tag (the rest is dropped silently)
+    doc = parse_document(text)
+    assert doc.records == [{"CALL": "YU1AB", "COMMENT": value}]
+    assert doc.warnings == ["Record 1: " + MISMATCH.format(field="COMMENT")]
+
+
 def test_application_marker_without_length_is_ignored():
     doc = parse_document("<CALL:5>YU1AB\n<eor>\n\n<APP_LoTW_EOF>\n")
     assert doc.records == [{"CALL": "YU1AB"}]
@@ -239,7 +295,7 @@ def test_missing_eoh_means_the_whole_file_is_records():
         "<EOH><CALL:5>YU1AB <EOR>",
         "WSJT-X ADIF Export<eoh>\n<call:5>YU1AB <eor>",
         "Created by <b>me</b> & 1 < 2 > 0 <http://x.y>\n<EOH>\n<CALL:5>YU1AB <EOR>",
-        "﻿Header text\n<EOH:0>\n<CALL:5>YU1AB <EOR>",
+        "\ufeffHeader text\n<EOH:0>\n<CALL:5>YU1AB <EOR>",
     ],
 )
 def test_header_without_fields_and_free_text(text):
@@ -289,6 +345,17 @@ def test_parse_document_accepts_bytes_and_none():
     assert parse_document(None) == AdifDocument()
 
 
+def test_parse_document_bytes_report_the_latin1_fallback_like_read_adi(tmp_path):
+    data = "<CALL:5>DL1AB <NAME:6>Jürgen <EOR>\n<CALL:5>DL2AB <EOR> <X>".encode("latin-1")
+    path = tmp_path / "latin1.adi"
+    path.write_bytes(data)
+    doc = parse_document(data)
+    assert doc == read_adi(path)
+    assert doc.records == [{"CALL": "DL1AB", "NAME": "Jürgen"}, {"CALL": "DL2AB"}]
+    assert doc.warnings == [LATIN1, "Record 3: field X has no length, skipped"]
+    assert parse_document(data.decode("latin-1")).warnings == doc.warnings[1:]
+
+
 def test_duplicate_field_last_wins_with_warning():
     doc = parse_document("<CALL:5>YU1AB <BAND:3>20m <call:5>YU2AB <EOR>")
     assert doc.records == [{"CALL": "YU2AB", "BAND": "20m"}]
@@ -301,17 +368,169 @@ def test_duplicate_header_field_last_wins_with_warning():
     assert doc.warnings == ["Header: duplicate field PROGRAMID, the last value is used"]
 
 
-def test_tag_without_length_is_skipped_with_a_warning():
-    doc = parse_document("<CALL:5>YU1AB <NAME>Marko <EOR>")
+@pytest.mark.parametrize("name", ["NAME", "name", "MY-NAME", "USERDEF_9"])
+def test_tag_without_length_is_skipped_with_a_warning(name):
+    doc = parse_document(f"<CALL:5>YU1AB <{name}>Marko <EOR>")
     assert doc.records == [{"CALL": "YU1AB"}]
-    assert doc.warnings == ["Record 1: field NAME has no length, skipped"]
+    assert doc.warnings == [f"Record 1: field {name.upper()} has no length, skipped"]
 
 
-@pytest.mark.parametrize("tag", ["<NAME:x>", "<NAME:-5>", "<NAME:5x>", "<NAME: 5>"])
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "<NAME:x>",
+        "<NAME:-5>",
+        "<NAME:5x>",
+        "<NAME: 5>",
+        "<NAME :5>",
+        "< NAME:5>",
+        "<MY NAME :5>",
+        "<NA\tME:5>",
+        "<NAME:5:S:X>",
+    ],
+)
 def test_invalid_tag_is_skipped_with_a_warning(tag):
     doc = parse_document(f"<CALL:5>YU1AB <EOR>\n<CALL:5>YU2AB {tag}Marko <EOR>")
     assert doc.records == [{"CALL": "YU1AB"}, {"CALL": "YU2AB"}]
     assert doc.warnings == [f"Record 2: invalid tag {tag} skipped"]
+
+
+def test_field_name_with_a_space_at_either_end_is_reported():
+    # ADIF: a user-defined field name may not begin or end with a space
+    doc = parse_document("<CALL :5>YU1AB <EOR>")
+    assert doc.records == []
+    assert doc.warnings == ["Record 1: invalid tag <CALL :5> skipped"]
+
+
+def test_user_defined_field_names_with_spaces_are_read():
+    # ADIF allows any character but , : < > { } in user-defined field names (no space at
+    # either end); xlog writes contest serial numbers as <Seq (S):3>001 <Seq (R):3>792
+    doc = parse_document("<CALL:4>N5DO <MODE:3>SSB <Seq (S):3>001 <Seq (R):3:N>792 <EOR>")
+    assert doc.records == [{"CALL": "N5DO", "MODE": "SSB", "SEQ (S)": "001", "SEQ (R)": "792"}]
+    assert doc.warnings == []
+    doc = parse_document("<USERDEF1:12:S>Sweater Size <EOH><CALL:5>YU1AB <Sweater Size:1>M <EOR>")
+    assert doc.header == {"USERDEF1": "Sweater Size"}
+    assert doc.records == [{"CALL": "YU1AB", "SWEATER SIZE": "M"}]
+    assert doc.warnings == []
+
+
+@pytest.mark.parametrize(
+    "name", ["MY NAME", "My.Name", "Seq (S)", "IME_ČAČAK", "a=b", "#1", "-X", "A  B", "Ωmega"]
+)
+def test_user_defined_field_name_characters(name):
+    doc = parse_document(f"<CALL:5>YU1AB <{name}:5>Marko <EOR>")
+    assert doc.records == [{"CALL": "YU1AB", name.upper(): "Marko"}]
+    assert doc.warnings == []
+
+
+def test_user_defined_field_name_needs_a_length():
+    # without a length such text is no tag: free text such as <my note> or <a href=x>
+    doc = parse_document(
+        "<CALL:5>YU1AB <EOR>\n<my note> <Seq (S)>001 <a href=x>\n<CALL:5>YU2AB <EOR>"
+    )
+    assert doc.records == [{"CALL": "YU1AB"}, {"CALL": "YU2AB"}]
+    assert doc.warnings == []
+
+
+def test_text_that_looks_like_a_user_defined_tag_is_text_unless_its_value_fits():
+    # a name with a space is only a guess: <at 10:15> must not swallow the next real tag
+    doc = parse_document("Exported <at 10:15>\n<ADIF_VER:5>3.1.4\n<EOH>\n<CALL:5>YU1AB <EOR>")
+    assert doc.header == {"ADIF_VER": "3.1.4"}
+    assert doc.records == [{"CALL": "YU1AB"}]
+    assert doc.warnings == []
+    doc = parse_document("<CALL:5>YU1AB <EOR>\nNote <at 10:15> tnx\n<CALL:5>YU2AB <EOR>")
+    assert doc.records == [{"CALL": "YU1AB"}, {"CALL": "YU2AB"}]
+    assert doc.warnings == ["Record 2: invalid tag <at 10:15> skipped"]
+
+
+def test_text_that_looks_like_a_user_defined_tag_never_swallows_a_field():
+    # 15 characters ' x\n<MODE:3>tnx\r' would end cleanly before <CALL:5>, but hold <MODE:3>
+    doc = parse_document(
+        "<CALL:5>YU1AB <EOR>\nnote <at 10:15> x\n<MODE:3>tnx\r\n<CALL:5>YU2AB <EOR>"
+    )
+    assert doc.records == [{"CALL": "YU1AB"}, {"MODE": "tnx", "CALL": "YU2AB"}]
+    assert doc.warnings == ["Record 2: invalid tag <at 10:15> skipped"]
+    # nor another field with a user-defined name
+    doc = parse_document(
+        "<CALL:5>YU1AB <EOR>\nnote <at 10:15> x\n<a=b:3>1:2\r\n<Seq (S):3>001 <EOR>"
+    )
+    assert doc.records == [{"CALL": "YU1AB"}, {"A=B": "1:2", "SEQ (S)": "001"}]
+    assert doc.warnings == ["Record 2: invalid tag <at 10:15> skipped"]
+
+
+def test_user_defined_field_limits():
+    # a value with a user-defined name may not hold a tag (<CALL:5>, <a b:1>): such a tag is
+    # reported and skipped, the rest is read as usual
+    doc = parse_document("<CALL:5>YU1AB <My Note:13><CALL:5>YU9ZZ <EOR>")
+    assert doc.records == [{"CALL": "YU9ZZ"}]
+    assert doc.warnings == [
+        "Record 1: invalid tag <My Note:13> skipped",
+        "Record 1: duplicate field CALL, the last value is used",
+    ]
+    doc = parse_document("<CALL:5>YU1AB <My Note:8><a b:1>x <EOR>")
+    assert doc.records == [{"CALL": "YU1AB", "A B": "x"}]
+    assert doc.warnings == ["Record 1: invalid tag <My Note:8> skipped"]
+
+
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [
+        ("<CALL:5>YU1AB <Seq (S):4>001 <EOR>", "001"),  # too long, only whitespace covered
+        ("<CALL:5>YU1AB <Opština:7>Vračar<EOR>", "Vračar"),  # counted in bytes
+        ("<CALL:5>YU1AB <Opština:7>Vračar <EOR>", "Vračar"),
+        ("<CALL:5>YU1AB <Opština:11>Đorđe <b>\n<EOR>", "Đorđe <b>"),  # bytes, with a '<'
+        ("<CALL:5>YU1AB <My Note:5>a<b>c\n<EOR>", "a<b>c"),
+    ],
+)
+def test_user_defined_field_whose_value_fits_is_read(text, value):
+    doc = parse_document(text)
+    assert len(doc.records) == 1 and list(doc.records[0].values()) == ["YU1AB", value]
+    assert all("bytes" in warning for warning in doc.warnings)
+
+
+@pytest.mark.parametrize(
+    ("text", "tag"),
+    [
+        ("<CALL:5>YU1AB <Seq (S):2>001 <EOR>", "<Seq (S):2>"),  # too short
+        ("<CALL:5>YU1AB <Seq (S):8>001 <EOR>\n", "<Seq (S):8>"),  # swallows <EOR, ends in text
+        ("<CALL:5>YU1AB <Seq (S):30>001 <EOR>", "<Seq (S):30>"),  # past the end
+    ],
+)
+def test_user_defined_field_whose_value_does_not_fit_is_reported(text, tag):
+    doc = parse_document(text)
+    assert doc.records == [{"CALL": "YU1AB"}]
+    assert doc.warnings == [f"Record 1: invalid tag {tag} skipped"]
+
+
+@pytest.mark.parametrize("inner", ["<Hvala lepo:3>", "<ЂRđњ:3>", "<a b:30>"])
+def test_byte_counted_value_containing_text_like_a_user_defined_tag(inner):
+    # inside a byte-counted value such text is data: it does not stop the byte reading
+    value = f"Ђорђе {inner} 73"
+    doc = parse_document(f"<NOTES:{len(value.encode())}>{value}\t<QTH:7>Beograd <EOR>")
+    assert doc.records == [{"NOTES": value, "QTH": "Beograd"}]
+    assert doc.warnings == ["Record 1: " + BYTES.format(field="NOTES")]
+
+
+def test_byte_counted_value_before_a_user_defined_field():
+    # 7 characters 'Đorđe <' would swallow the tag <Seq (S):3>, 7 bytes are 'Đorđe'
+    doc = parse_document("<CALL:5>YU1AB <NAME:7>Đorđe <Seq (S):3>001 <EOR>")
+    assert doc.records == [{"CALL": "YU1AB", "NAME": "Đorđe", "SEQ (S)": "001"}]
+    assert doc.warnings == ["Record 1: " + BYTES.format(field="NAME")]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "see <http://lotw.arrl.org>",
+        "<https://www.qrz.com/db/YU1AB>",
+        '<a href="http://example.com/log">log</a>',
+        "<file:///C:/Logs/yu1ab.adi>",
+    ],
+)
+def test_links_between_records_are_not_reported(text):
+    doc = parse_document(f"<EOH><CALL:5>YU1AB <EOR>\n{text}\n<CALL:5>YU2AB <EOR>")
+    assert doc.records == [{"CALL": "YU1AB"}, {"CALL": "YU2AB"}]
+    assert doc.warnings == []
 
 
 def test_joined_files_second_header_goes_to_the_header():
@@ -335,6 +554,202 @@ def test_records_before_the_first_eoh_are_not_lost():
     assert len(doc.warnings) == 1 and "<EOH>" in doc.warnings[0]
 
 
+# --- header boundary: <EOH> inside values, QSO fields before the <EOH> ------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<CALL:5>YU1AB <COMMENT:14>see <eoh> here <BAND:3>20m <EOR>\n<CALL:5>YU2AB <EOR>\n",
+        "<COMMENT:14>see <eoh> here <CALL:5>YU1AB <BAND:3>20m <EOR>\n<CALL:5>YU2AB <EOR>\n",
+        "<BAND:3>20m\n<COMMENT:14>see <eoh> here\n<CALL:5>YU1AB\n<EOR>\n<CALL:5>YU2AB\n<EOR>",
+    ],
+)
+def test_eoh_inside_a_value_of_a_file_without_header(text):
+    # a value of correct length may contain '<eoh>'; it is data, not the end of a header
+    doc = parse_document(text)
+    assert doc.header == {}
+    assert doc.records == [
+        {"CALL": "YU1AB", "COMMENT": "see <eoh> here", "BAND": "20m"},
+        {"CALL": "YU2AB"},
+    ]
+    assert doc.warnings == []
+
+
+def test_eoh_inside_header_values():
+    text = (
+        "Log\n<PROGRAMVERSION:7>x<EOH>y <APP_X_NOTE:15>a <eoh> b <EOH>\n<ADIF_VER:5>3.1.4\n"
+        "<EOH>\n<CALL:5>YU1AB <EOR>\n"
+    )
+    doc = parse_document(text)
+    assert doc.header == {
+        "PROGRAMVERSION": "x<EOH>y",
+        "APP_X_NOTE": "a <eoh> b <EOH>",
+        "ADIF_VER": "3.1.4",
+    }
+    assert doc.records == [{"CALL": "YU1AB"}]
+    assert doc.warnings == []
+
+
+@pytest.mark.parametrize("value", ["x<EOH>y", "<EOH>", "a <eoh> b", "<EOR>", "Đorđe <EOH>"])
+def test_header_value_with_tags_round_trips(value):
+    header = {"PROGRAMVERSION": value, "APP_HAMQ_NOTE": value}
+    doc = parse_document(format_document([{"CALL": "YU1AB"}], header=header))
+    assert doc.header == {"ADIF_VER": "3.1.4", "PROGRAMID": "HamQ", **header}
+    assert doc.records == [{"CALL": "YU1AB"}]
+    assert doc.warnings == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<PROGRAMID:500>WSJT-X<EOH>\n<CALL:5>YU1AB <EOR>",  # runs past the end of the file
+        "<PROGRAMID:12>WSJT-X<EOH>x\n<CALL:5>YU1AB <EOR>",  # does not end before a tag
+    ],
+)
+def test_header_value_too_long_for_the_eoh_is_cut_at_the_eoh(text):
+    doc = parse_document(text)
+    assert doc.header == {"PROGRAMID": "WSJT-X"}
+    assert doc.records == [{"CALL": "YU1AB"}]
+    assert doc.warnings == [
+        "Header: field PROGRAMID runs past the end of the header, value may be incomplete"
+    ]
+
+
+@pytest.mark.parametrize(
+    "field", ["PROGRAMID", "PROGRAMVERSION", "CREATED_TIMESTAMP", "USERDEF1", "APP_X_NOTE", "BAND"]
+)
+def test_only_eoh_inside_a_value_after_a_header_field_ends_the_header(field):
+    # 11 characters 'WSJT-X<EOH>' would end cleanly, but no other <EOH> follows. After a header
+    # field (ADIF_VER) the file has a header, so this <EOH> ends it and the length is wrong.
+    doc = parse_document(f"<ADIF_VER:5>3.1.4 <{field}:11>WSJT-X<EOH>\n<CALL:5>YU1AB <EOR>")
+    assert doc.header == {"ADIF_VER": "3.1.4", field: "WSJT-X"}
+    assert doc.records == [{"CALL": "YU1AB"}]
+    assert doc.warnings == [
+        f"Header: field {field} runs past the end of the header, value may be incomplete"
+    ]
+
+
+def test_eoh_inside_a_header_value_followed_by_records_ends_the_header():
+    # a later <EOH> (of a joined file) does not make the first one data when records come
+    # between them: the length of PROGRAMID is wrong
+    second = format_document([{"CALL": "YU2AB"}], header={"PROGRAMID": "Second"})
+    first = "<ADIF_VER:3>2.2 <ADIF_VER:5>3.1.4 <PROGRAMID:11>WSJT-X<EOH>\n<CALL:5>YU1AB <EOR>\n"
+    doc = parse_document(first + second)
+    assert doc.header == {"ADIF_VER": "3.1.4", "PROGRAMID": "WSJT-X"}
+    assert doc.records == [{"CALL": "YU1AB"}, {"CALL": "YU2AB"}]
+    assert doc.warnings == [  # each once, although the header is read twice
+        "Header: duplicate field ADIF_VER, the last value is used",
+        "Header: field PROGRAMID runs past the end of the header, value may be incomplete",
+        "Record 2: another <EOH> found (joined files?), the fields before it were treated as header",
+    ]
+
+
+def test_eoh_inside_a_record_value_of_a_file_joined_with_one_that_has_a_header():
+    second = format_document([{"CALL": "YU2AB"}], header={"PROGRAMID": "Second"})
+    doc = parse_document("<COMMENT:14>see <eoh> here <CALL:5>YU1AB <EOR>\n" + second)
+    assert doc.header == {"ADIF_VER": "3.1.4", "PROGRAMID": "Second"}
+    assert doc.records == [{"COMMENT": "see <eoh> here", "CALL": "YU1AB"}, {"CALL": "YU2AB"}]
+    assert doc.warnings == [
+        "Record 2: another <EOH> found (joined files?), the fields before it were treated as header"
+    ]
+
+
+def test_record_without_call_before_the_first_eoh_is_not_moved_into_the_header():
+    doc = parse_document("<BAND:3>20m <EOR>\n<ADIF_VER:5>3.1.4 <EOH>\n<CALL:5>YU1AB <EOR>")
+    assert doc.header == {"ADIF_VER": "3.1.4"}
+    assert doc.records == [{"BAND": "20m"}, {"CALL": "YU1AB"}]
+    assert doc.warnings == [
+        "Record 2: another <EOH> found (joined files?), the fields before it were treated as header"
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Records end with <EOR>\n<ADIF_VER:5>3.1.4 <EOH>\n<CALL:5>YU1AB <EOR>",
+        "<eor> Log\n<ADIF_VER:5>3.1.4 <EOH>\n<CALL:5>YU1AB <EOR>",
+        "Log\n<ADIF_VER:5>3.1.4 <PROGRAMID:4>Test\n<EOR> ends a record\n<EOH>\n<CALL:5>YU1AB <EOR>",
+    ],
+)
+def test_eor_in_the_free_header_text_is_text(text):
+    # an <EOR> before the <EOH> only means "records first" after a field of a record
+    doc = parse_document(text)
+    assert doc.header["ADIF_VER"] == "3.1.4"
+    assert doc.records == [{"CALL": "YU1AB"}]
+    assert doc.warnings == []
+
+
+@pytest.mark.parametrize("eoh", ["<EOH:0>", "<eoh:0:s>", "<Eoh:00>"])
+def test_header_fields_ended_by_eoh_with_a_length(eoh):
+    doc = parse_document(f"Log\n<ADIF_VER:5>3.1.4 <PROGRAMID:4>HamQ {eoh}\n<CALL:5>YU1AB <EOR>")
+    assert doc.header == {"ADIF_VER": "3.1.4", "PROGRAMID": "HamQ"}
+    assert doc.records == [{"CALL": "YU1AB"}]
+    assert doc.warnings == []
+
+
+def test_byte_counted_header_value_ends_at_the_eoh():
+    # 10 bytes are 'ĐĐĐĐĐ' and end at <EOH>; 10 characters would also end cleanly, after it.
+    # The contract's byte rule wins, as it does in records.
+    doc = parse_document("<MY_NAME:10>ĐĐĐĐĐ<EOH> <CALL:5>YU1AB <EOR>")
+    assert doc.header == {"MY_NAME": "ĐĐĐĐĐ"}
+    assert doc.records == [{"CALL": "YU1AB"}]
+    assert doc.warnings == ["Header: " + BYTES.format(field="MY_NAME")]
+
+
+def test_record_without_eor_before_the_header_of_an_appended_file():
+    text = "<CALL:5>YU1AB <BAND:3>20m\nHeader 2\n<ADIF_VER:5>3.1.4 <EOH>\n<CALL:5>YU2AB <EOR>\n"
+    doc = parse_document(text)
+    assert doc.header == {"ADIF_VER": "3.1.4"}
+    assert doc.records == [{"CALL": "YU1AB", "BAND": "20m"}, {"CALL": "YU2AB"}]
+    assert doc.warnings == [
+        "Record 1: " + MISMATCH.format(field="BAND"),  # 'Header 2' follows the value
+        "Record 1: missing <EOR> before <EOH> (joined files?), record kept",
+    ]
+
+
+def test_joined_files_last_record_of_the_first_without_eor_is_kept():
+    first = format_document([{"CALL": "YU1AB"}], header={"PROGRAMID": "First"})
+    truncated = "<CALL:5>YU3AB <BAND:3>20m <APP_N1MM_ID:2>42 "
+    second = format_document(
+        [{"CALL": "YU2AB"}],
+        header={
+            "PROGRAMID": "Second",
+            "PROGRAMVERSION": "2",
+            "CREATED_TIMESTAMP": "20260929 101500",
+            "USERDEF1": "EPC",
+        },
+    )
+    doc = parse_document(first + truncated + second)
+    assert doc.records == [
+        {"CALL": "YU1AB"},
+        {"CALL": "YU3AB", "BAND": "20m", "APP_N1MM_ID": "42"},
+        {"CALL": "YU2AB"},
+    ]
+    assert doc.header == {
+        "ADIF_VER": "3.1.4",
+        "PROGRAMID": "First",
+        "PROGRAMVERSION": "2",
+        "CREATED_TIMESTAMP": "20260929 101500",
+        "USERDEF1": "EPC",
+    }
+    assert doc.warnings == [
+        "Record 2: " + MISMATCH.format(field="APP_N1MM_ID"),  # header text of the second file
+        "Record 2: missing <EOR> before <EOH> (joined files?), record kept",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("CALL", "YU1AB"), ("QSO_DATE", "20260915"), ("TIME_ON", "1845")]
+)
+def test_qso_field_before_the_first_eoh_is_a_record(field, value):
+    text = f"<ADIF_VER:5>3.1.4 <{field}:{len(value)}>{value} <BAND:3>20m <EOH>\n<CALL:5>YU2AB <EOR>"
+    doc = parse_document(text)
+    assert doc.header == {"ADIF_VER": "3.1.4"}
+    assert doc.records == [{field: value, "BAND": "20m"}, {"CALL": "YU2AB"}]
+    assert doc.warnings == ["Record 1: missing <EOR> before <EOH> (joined files?), record kept"]
+
+
 def test_warnings_are_translated(monkeypatch):
     monkeypatch.setattr(adif, "tr", lambda text: "T:" + text)
     doc = parse_document("<PROGRAMID:9>A<EOH><CALL:5>YU1AB <CALL:5>YU2AB <X>")
@@ -354,6 +769,7 @@ def test_warnings_are_capped():
 
 MISMATCH = "length of field {field} does not match its data, this or the next field may be wrong"
 BYTES = "length of field {field} is given in bytes instead of characters, value corrected"
+LATIN1 = "File is not valid UTF-8, it was read as Latin-1 (ISO 8859-1)"
 
 
 def test_too_short_length_warns_and_later_fields_parse():
@@ -401,6 +817,47 @@ def test_header_length_mismatch_and_byte_count():
         "Header: length of field PROGRAMID does not match its data, the value may be wrong",
         "Header: " + BYTES.format(field="MY_NAME"),
     ]
+
+
+@pytest.mark.parametrize(
+    "piece", ["<a b:2000000000>", "<CALL:2000000000>", "<a b:5>xxxxxx", "<", "<b>", "<a b:"]
+)
+def test_pathological_input_is_parsed_in_linear_time(piece):
+    # checking a tag with a user-defined name must not scan the rest of the file each time
+    def seconds(count: int) -> float:
+        text = piece * count
+        start = time.perf_counter()
+        parse_document(text)
+        return time.perf_counter() - start
+
+    small, large = min(seconds(5000) for _ in range(3)), min(seconds(20000) for _ in range(3))
+    assert large < 8 * small + 0.02, (small, large)  # linear: about 4 times, quadratic: 16
+
+
+def test_user_defined_tags_ending_in_one_long_whitespace_run_are_parsed_in_linear_time():
+    # every <a b:n> declares a value that ends in the same long run of spaces, followed by
+    # text; checking whether such a tag fits must not scan the whole run for each of them
+    def seconds(count: int) -> float:
+        size = len("<a b:0000000>x")
+        spaces = count * 100
+        items = [
+            f"<a b:{count * size + 10 + i - (i * size + size - 1):07d}>x" for i in range(count)
+        ]
+        text = "".join(items) + " " * spaces + "x"
+        start = time.perf_counter()
+        doc = parse_document(text)
+        elapsed = time.perf_counter() - start
+        assert doc.records == []
+        return elapsed
+
+    small, large = min(seconds(500) for _ in range(3)), min(seconds(2000) for _ in range(3))
+    assert large < 8 * small + 0.02, (small, large)  # linear: about 4 times, quadratic: 16
+
+
+def test_user_defined_field_followed_by_much_whitespace_fits():
+    doc = parse_document("<CALL:5>YU1AB <Seq (S):3>001" + " " * 1000 + "\n" * 1000 + "<EOR>")
+    assert doc.records == [{"CALL": "YU1AB", "SEQ (S)": "001"}]
+    assert doc.warnings == []
 
 
 def test_random_garbage_never_raises():
@@ -494,6 +951,18 @@ def test_character_counted_value_with_tag_like_text_is_literal():
     doc = parse_document(f"<COMMENT:{len(value)}>{value} <CALL:5>YU9ZZ <EOR>")
     assert doc.records == [{"COMMENT": value, "CALL": "YU9ZZ"}]
     assert doc.warnings == []
+
+
+@pytest.mark.parametrize("value", ["Ђорђе <eor>", "ĐĐĐĐĐ<EOR>"])
+def test_byte_rule_known_limit(value):
+    # Documented limit of the contract's byte rule: in a character-counted value, a
+    # well-formed tag after enough non-ASCII letters makes the value look byte-counted
+    # (the byte reading ends cleanly just before that tag). parse(format(x)) == x does not
+    # hold for such values; real logs do not contain them. No ':' is needed for this, so
+    # test_roundtrip_random_records does not exclude it, it only makes it improbable.
+    doc = parse_document(format_document([{"CALL": "YU1AB", "COMMENT": value}]))
+    assert doc.records == [{"CALL": "YU1AB", "COMMENT": value[: value.index("<")].strip()}]
+    assert doc.warnings == ["Record 1: " + BYTES.format(field="COMMENT")]
 
 
 def test_byte_and_character_counted_records_mix_in_one_file():
@@ -727,11 +1196,19 @@ def test_format_record_values():
 
 
 @pytest.mark.parametrize(
-    "name", ["", " ", "CALL SIGN", "A:B", "<X>", "EOR", "eoh", "NAME,", "{X}", "-X", "Đ"]
+    "name", ["", " ", "A:B", "<X>", "EOR", "eoh", "NAME,", "{X}", "A\nB", "A\tB", "A\x7fB"]
 )
 def test_format_record_rejects_invalid_field_names(name):
     with pytest.raises(ValueError):
         format_record({name: "x"})
+
+
+@pytest.mark.parametrize("name", ["SEQ (S)", "Sweater Size", "MY.NAME", "-X", "IME_ČAČAK"])
+def test_format_record_writes_user_defined_field_names(name):
+    # every name the parser reads can be written back
+    text = format_record({name: "abc"})
+    assert text == f"<{name.upper()}:3>abc <EOR>\n"
+    assert parse_document(text).records == [{name.upper(): "abc"}]
 
 
 def test_format_document_default_header():
@@ -761,7 +1238,7 @@ def test_format_document_without_records():
 NAME_POOL = [
     "CALL", "QSO_DATE", "TIME_ON", "BAND", "MODE", "SUBMODE", "FREQ", "GRIDSQUARE", "NAME",
     "QTH", "COMMENT", "NOTES", "RST_SENT", "APP_N1MM_ID", "APP_QRZLOG_LOGID", "MY_GRIDSQUARE",
-    "LAT", "LON", "X-1", "USERDEF_9",
+    "LAT", "LON", "X-1", "USERDEF_9", "SEQ (S)", "SWEATER SIZE",
 ]  # fmt: skip
 ALPHABET = (
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,;/-+#!?()'\"&<>"
@@ -771,6 +1248,9 @@ TRICKY = [
     "a<b", "<", ">", "<>", "1 < 2 > 0", "<b>", "<EOR>", "<eoh>", "<CALL:5>YU1AB", "Đorđe <EOR>",
     "Miloš Šćekić", "x\r\ny", "<NAME:3>abc and more", "Хвала на вези", "<<EOR>>",
 ]  # fmt: skip
+# values with a tag in them are not read back under a user-defined name (test_user_defined_field_limits)
+USER_NAMES = {"SEQ (S)", "SWEATER SIZE"}
+TRICKY_WITHOUT_TAGS = [value for value in TRICKY if not re.search(r"<(eo[rh]|\w+:\d)", value, re.I)]
 
 
 def random_value(rng: random.Random) -> str:
@@ -784,9 +1264,19 @@ def test_roundtrip_random_records():
         for _ in range(rng.randrange(1, 8)):
             names = rng.sample(NAME_POOL, rng.randrange(1, 10))
             records.append(
-                {n: rng.choice(TRICKY) if rng.random() < 0.2 else random_value(rng) for n in names}
+                {
+                    n: rng.choice(TRICKY_WITHOUT_TAGS if n in USER_NAMES else TRICKY)
+                    if rng.random() < 0.2
+                    else random_value(rng)
+                    for n in names
+                }
             )
-        header = {"PROGRAMVERSION": random_value(rng)} if rng.random() < 0.5 else None
+        header = None
+        if rng.random() < 0.5:  # header values may hold '<EOH>', '<EOR>' and other tag-like text
+            header = {
+                name: rng.choice(TRICKY) if rng.random() < 0.3 else random_value(rng)
+                for name in rng.sample(["PROGRAMVERSION", "APP_HAMQ_NOTE", "USERDEF1"], 2)
+            }
         doc = parse_document(format_document(records, header))
         assert doc.records == records
         assert doc.warnings == []
@@ -818,7 +1308,7 @@ def test_fixture_wsjtx_log():
     )
     assert "SUBMODE" not in doc.records[0] and doc.records[0]["MODE"] == "FT8"
     assert all(r["STATION_CALLSIGN"] == "YU1QQ" for r in doc.records)
-    assert all(r["MY_GRIDSQUARE"] == "KN04fs" for r in doc.records)
+    assert all(r["MY_GRIDSQUARE"] == "KN04ft" for r in doc.records)
     assert doc.records[5]["GRIDSQUARE"] == ""
 
 
@@ -852,7 +1342,7 @@ def test_fixture_log4om():
     assert round(parse_latlon(vk["MY_LAT"]), 4) == 44.8125
     assert round(parse_latlon(vk["MY_LON"]), 4) == 20.4612
     assert doc.records[1]["GRIDSQUARE"] == "JN75xt74oj"
-    assert all(r["MY_GRIDSQUARE"] == "KN04fs" for r in doc.records)
+    assert all(r["MY_GRIDSQUARE"] == "KN04ft" for r in doc.records)
 
 
 def test_fixture_qrz_export():
@@ -956,6 +1446,101 @@ def test_fixture_latin1():
     assert [r["NAME"] for r in doc.records] == ["Jürgen Müller", "José Muñoz", "François"]
     assert [r["QTH"] for r in doc.records] == ["München", "Alcalá de Henares", "Besançon"]
     assert doc.warnings == ["File is not valid UTF-8, it was read as Latin-1 (ISO 8859-1)"]
+
+
+CP1250_NAMES = ["Miloš Šćekić", "Đorđe Petrović", "Žarko Čučković"]
+CP1250_QTHS = ["Šabac", "Čačak", "Požarevac"]
+
+
+def test_fixture_cp1250_is_read_without_losing_qsos():
+    raw = (FIXTURES / "cp1250.adi").read_bytes()
+    assert raw.decode("cp1250").count("<EOR>") == 3
+    assert any(0x80 <= byte <= 0x9F for byte in raw)  # Š š Ž ž: C1 controls in Latin-1
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")
+    doc = load("cp1250.adi")
+    assert doc.header == {"ADIF_VER": "2.2.7", "PROGRAMID": "WinLog", "PROGRAMVERSION": "3.1"}
+    assert calls(doc) == ["YU1XYZ", "YT2XYZ", "YU7XYZ"]
+    assert [r["GRIDSQUARE"] for r in doc.records] == ["JN94us", "KN03ev", "KN04oo"]
+    assert [len(r["NAME"]) for r in doc.records] == [len(name) for name in CP1250_NAMES]
+    # contract: decode_bytes falls back to Latin-1, so the letters are not right yet
+    assert doc.warnings == ["File is not valid UTF-8, it was read as Latin-1 (ISO 8859-1)"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="contract: decode_bytes falls back to Latin-1; decoding Windows-1250 is a contract "
+    "change request (tasks/M2-01-adif-core.md, Notes)",
+)
+def test_fixture_cp1250_serbian_letters():
+    doc = load("cp1250.adi")
+    assert [r["NAME"] for r in doc.records] == CP1250_NAMES
+    assert [r["QTH"] for r in doc.records] == CP1250_QTHS
+    assert doc.records[2]["COMMENT"] == "Ćao, vidimo se na 40m"
+
+
+MIXED_NAMES = ["Đorđe Petrović", "Miloš Šćekić", "Jürgen Müller", "François"]
+MIXED_QTHS = ["Čačak", "Niš", "München", "Besançon"]
+
+
+def test_fixture_mixed_encoding_keeps_every_qso():
+    raw = (FIXTURES / "mixed_encoding.adi").read_bytes()
+    assert "Đorđe".encode() in raw and "Jürgen".encode("latin-1") in raw
+    doc = load("mixed_encoding.adi")
+    assert doc.header == {"ADIF_VER": "3.1.4", "PROGRAMID": "TestLog"}
+    assert calls(doc) == ["YU1XYZ", "YT2XYZ", "DL1XYZ", "F5XYZ"]
+    # contract: one byte that is not UTF-8 makes the whole file Latin-1, so only the Latin-1
+    # part is right; the UTF-8 names are garbled and cut (with length warnings)
+    assert [r["NAME"] for r in doc.records[2:]] == MIXED_NAMES[2:]
+    assert [r["QTH"] for r in doc.records[2:]] == MIXED_QTHS[2:]
+    assert doc.warnings[0] == LATIN1
+    assert doc.warnings[-1] == (
+        "Record 3: another <EOH> found (joined files?), the fields before it were treated as header"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="contract: decode_bytes falls back to Latin-1 for the whole file; a fallback for "
+    "the invalid bytes only is a contract change request (tasks/M2-01-adif-core.md, Notes)",
+)
+def test_fixture_mixed_encoding_utf8_part_is_kept():
+    doc = load("mixed_encoding.adi")
+    assert [r["NAME"] for r in doc.records] == MIXED_NAMES
+    assert [r["QTH"] for r in doc.records] == MIXED_QTHS
+    assert len(doc.warnings) == 2
+
+
+def test_fixture_xlog_user_defined_fields():
+    doc = load("xlog.adi")
+    assert doc.header == {"ADIF_VER": "2.2.7"}  # the <e-mail> in the header text is no tag
+    assert doc.warnings == []
+    assert calls(doc) == ["K5XYZ", "JA1XYZ", "DL7XYZ"]
+    assert [(r.get("SEQ (S)"), r.get("SEQ (R)")) for r in doc.records] == [
+        ("001", "792"),
+        ("002", "1043"),
+        (None, None),
+    ]
+    assert (doc.records[2]["NAME"], doc.records[2]["FREQ"]) == ("Hans", "14.070150")
+
+
+def test_fixture_positions_agree_with_their_locators():
+    # LAT/LON and GRIDSQUARE (MY_LAT/MY_LON and MY_GRIDSQUARE) of one record give the same
+    # place, so later tests may use either; own station YU1QQ: 44.8125, 20.4612 = KN04ft
+    checked = 0
+    for path in sorted(FIXTURES.glob("*.adi")):
+        for record in read_adi(path).records:
+            for lat, lon, grid in (
+                ("LAT", "LON", "GRIDSQUARE"),
+                ("MY_LAT", "MY_LON", "MY_GRIDSQUARE"),
+            ):
+                if record.get(lat) and record.get(grid):
+                    here = parse_latlon(record[lat]), parse_latlon(record[lon])
+                    assert to_locator(*here, len(record[grid])) == record[grid], (path.name, grid)
+                    checked += 1
+            if "MY_GRIDSQUARE" in record:
+                assert record["MY_GRIDSQUARE"].upper() == "KN04FT", path.name
+    assert checked >= 7
 
 
 def test_fixture_bom_crlf():

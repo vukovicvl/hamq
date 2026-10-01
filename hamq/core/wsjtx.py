@@ -55,8 +55,9 @@ Strings are decoded as UTF-8, and bytes that are not valid UTF-8 as Latin-1. WSJ
 builds the Logged ADIF record with ``QString::toLatin1()`` (``LogBook::QSOToADIF``), so
 ``Jürgen`` arrives as Latin-1 and letters outside Latin-1, such as Serbian
 ``č ć š ž đ``, arrive as ``?`` (seen in a WSJT-X 2.7.0 capture). JTDX sends UTF-8.
-Both count ADIF field lengths in characters. WSJT-X also sends null strings, for
-example for an empty DX call.
+Both write each ADIF field length as ``QString::size()``, in UTF-16 code units: one
+per character, but two for a character above U+FFFF such as an emoji, which WSJT-X
+sends as ``??``. WSJT-X also sends null strings, for example for an empty DX call.
 """
 
 from __future__ import annotations
@@ -144,6 +145,32 @@ def _text(raw: bytes) -> str:
         return raw.decode("latin-1")
 
 
+def _datagram_bytes(data: object) -> bytes | None:
+    """``data`` as plain ``bytes``, or ``None`` when it is not a bytes-like datagram.
+
+    Only the built-in code of ``bytes``, ``bytearray`` and ``memoryview`` runs. The type
+    comes from ``type()``, so an object that only claims to be bytes through
+    ``__class__`` is refused. A subclass is copied by its base class, so none of its own
+    methods (``__bytes__``, ``__buffer__`` in Python 3.12+, ``__getitem__`` ...) is
+    called. Never raises: a released ``memoryview`` gives ``None``.
+    """
+    kind = type(data)
+    if kind is bytes:
+        return data  # the usual case, no copy
+    try:
+        if kind is bytearray:
+            return bytes(data)
+        if kind is memoryview:  # memoryview cannot be subclassed
+            return data.tobytes()
+        if issubclass(kind, bytes):
+            return bytes.__getitem__(data, slice(None))
+        if issubclass(kind, bytearray):
+            return bytes(bytearray.__getitem__(data, slice(None)))
+    except Exception:  # a released memoryview, or anything else going wrong
+        return None
+    return None
+
+
 class _Truncated(Exception):
     """A field does not fit in the bytes left in the datagram."""
 
@@ -210,14 +237,12 @@ def decode(data: bytes) -> dict[str, Any] | None:
 
     String values are ``str`` or ``None`` (a null string on the wire, or a missing
     Heartbeat revision). ``frequency_tolerance`` and ``tr_period`` are 0xFFFFFFFF when
-    they do not apply to the mode. ``data`` may be ``bytes``, ``bytearray`` or
-    ``memoryview``; anything else, or a released ``memoryview``, gives ``None``.
+    they do not apply to the mode. ``data`` may be ``bytes``, ``bytearray`` (or a
+    subclass of either; none of its own methods is called) or ``memoryview``; anything
+    else, or a released ``memoryview``, gives ``None``.
     """
-    if not isinstance(data, (bytes, bytearray, memoryview)):
-        return None
-    try:  # copy through the buffer protocol, never through a subclass's __bytes__
-        raw = data if type(data) is bytes else memoryview(data).tobytes()
-    except ValueError:  # a released memoryview
+    raw = _datagram_bytes(data)
+    if raw is None:
         return None
     reader = _Reader(raw)
     try:
@@ -364,13 +389,21 @@ class Writer:
         return self
 
     def utf8(self, value: str | None) -> Writer:
-        """Append a string as ``QString::toUtf8()`` gives it; ``None`` is a null string."""
+        """Append a string as ``QString::toUtf8()`` gives it; ``None`` is a null string.
+
+        A lone surrogate (from ``surrogateescape``, for example) cannot be encoded and
+        raises ``UnicodeEncodeError``, a ``ValueError``.
+        """
         return self.byte_array(None if value is None else _str(value).encode("utf-8"))
 
     def latin1(self, value: str | None) -> Writer:
-        """Append a string as ``QString::toLatin1()`` gives it: characters outside
-        Latin-1 become ``?``. WSJT-X sends the Logged ADIF record this way."""
-        return self.byte_array(None if value is None else _str(value).encode("latin-1", "replace"))
+        """Append a string as ``QString::toLatin1()`` gives it; ``None`` is a null string.
+
+        A QString holds UTF-16 and Qt converts it one code unit at a time: a character
+        outside Latin-1 becomes ``?``, and one above U+FFFF (two code units, such as an
+        emoji) becomes ``??``. WSJT-X sends the Logged ADIF record this way.
+        """
+        return self.byte_array(None if value is None else _qt_latin1(_str(value)))
 
     def qdatetime(self, value: datetime) -> Writer:
         """Append a ``QDateTime`` in UTC, as WSJT-X writes ``currentDateTimeUtc()``.
@@ -392,6 +425,12 @@ def _str(value: object) -> str:
     if not isinstance(value, str):
         raise TypeError(f"expected a str or None, got {type(value).__name__}")
     return value
+
+
+def _qt_latin1(text: str) -> bytes:
+    """``QString::toLatin1()``: one byte per UTF-16 code unit, ``?`` for a unit above 0xFF."""
+    units = "".join("??" if ord(char) > 0xFFFF else char for char in text)
+    return units.encode("latin-1", "replace")
 
 
 def _check_schema(schema: int) -> None:
@@ -462,7 +501,7 @@ def encode_logged_adif(client: str, adif: str, schema: int = 2, *, latin1: bool 
     """Encode a Logged ADIF message carrying ``adif`` as UTF-8, the way JTDX sends it.
 
     ``latin1=True`` encodes the text as WSJT-X does (``QString::toLatin1()``, so
-    characters outside Latin-1 become ``?``).
+    characters outside Latin-1 become ``?`` and characters above U+FFFF ``??``).
     """
     _check_schema(schema)
     writer = Writer().header(LOGGED_ADIF, client, schema)

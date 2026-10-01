@@ -75,15 +75,28 @@ What changed (new files):
   `QgsMessageLog.messageReceivedWithFormat(message, tag, level, format)`, the
   three-argument `messageReceived` is no longer emitted there.
 - `hamq/qgis_io/fields.py`: `make_field`, `make_fields`, `FIELD_KINDS`, and
-  `to_qdatetime(dt)` / `from_qdatetime(value)`: on every version a Python
-  `datetime` set as an attribute is rejected by `QgsVectorFileWriter`
-  ("Could not convert value"), a UTC `QDateTime` works and is stored as
-  `2024-05-17T12:34:56Z` (4.x) / `...56.000Z` (3.x).
+  `to_qdatetime(dt)` / `from_qdatetime(value)`. A Python `datetime` set as an
+  attribute is never converted by QGIS: `QgsVectorFileWriter` rejects the
+  feature on every version ("Could not convert value"), and the OGR provider
+  (`layer.dataProvider().addFeatures`, the insert path of the future
+  `gpkg.py`) reports success and silently stores NULL on 3.34, 3.40, 3.44
+  and 4.0 and rejects the feature only on 4.2 ("wrong data type ... expected
+  QDateTime"). A UTC `QDateTime` works on both paths and is stored as
+  `2024-05-17T12:34:56Z` (4.x) / `...56.000Z` (3.x). (The first round's
+  docstring said the provider rejects it too; corrected in the fix round.)
 - `hamq/settings.py`: `HamQSettings` with all 19 contract properties as typed
-  descriptors (`bool`/`int`/`float`/`str` conversion of stored text, invalid
-  or out-of-range stored values read as the default, setters raise
-  `ValueError` on invalid input, `my_call` uppercased, `my_grid` in
-  Maidenhead case), `station()` (lazy import of `core.qso.Station`),
+  descriptors. Setting and reading go through the same steps: conversion to
+  `bool`/`int`/`float`/`str`, normalization, validation; the setter raises
+  `ValueError`, the getter returns the default when a step fails, so a
+  hand-edited settings file gets the same treatment. Normalization: texts
+  stripped, `my_call` uppercased, `my_grid` through
+  `hamq.core.maidenhead.normalize` (10 characters cut to 8; text that is not a
+  locator kept, stripped), `language` / `last_serbian` to the canonical codes
+  (`" SR-latn "` -> `sr_Latn`). Invalid: ports outside 1..65535,
+  `rig_poll_ms <= 0`, non-finite numbers, a language other than
+  auto/en/sr_Latn/sr_Cyrl, a `last_serbian` other than sr_Latn/sr_Cyrl, and
+  (since the fix round) an empty `gpkg_path`, `wsjtx_addr`, `rig_host` or
+  `rot_host`. `station()` (lazy import of `core.qso.Station`),
   `profile_dir()`, `default_gpkg_path()`, `cty_cache_path()`,
   `SETTINGS_PREFIX`.
 - `hamq/events.py`: `HamQEvents` and thread-safe `events()` singleton, moved
@@ -104,13 +117,17 @@ What changed (new files):
 - Tests: `test_compat.py` (value and type table for every name, plus a
   functional use of each group: layers, parameters, flags, writer actions,
   message levels, widgets, UDP bind/state/address-in-use, network request,
-  QBuffer/QFile), `test_fields.py`, `test_settings_events.py`,
-  `test_plugin_load.py` (load/unload twice, provider/menu/toolbar/actions and
-  signal receivers restored, idempotent unload, `initProcessing` only,
-  retranslation, cleanups, docks, About box, provider algorithm list,
-  `processing.run("hamq:dummy")`, icons), `tests/core/test_architecture.py`
-  (AST scan of `hamq/core/**/*.py` incl. dynamic imports and imports of
-  non-core HamQ modules, plus scanner self-tests).
+  QBuffer/QFile), `test_fields.py` (incl. both datetime insert paths),
+  `test_settings_events.py`, `test_plugin_load.py` (load/unload twice with no
+  warning or critical log message, provider/menu/toolbar/actions and signal
+  receivers restored, idempotent unload, `initProcessing` only and
+  idempotent, retranslation, `refreshAlgorithms()` on a language change,
+  Processing Toolbox visibility, cleanups, docks, About box, `add_action`
+  options, provider algorithm list, `processing.run("hamq:dummy")`, icons),
+  `tests/core/test_architecture.py` (AST scan of `hamq/core/**/*.py` incl.
+  dynamic imports and imports of non-core HamQ modules, plus scanner
+  self-tests; `from __future__ import annotations` in every `hamq/**/*.py`).
+
 - `scripts/test_qgis.sh`: targets local / 3.44 / 4.0 / 3.34 / all; Docker
   runs mount the repo read-only as the calling user with `HOME=/tmp`,
   `PYTHONDONTWRITEBYTECODE=1`, `-p no:cacheprovider`, offscreen Qt; on 3.34
@@ -119,44 +136,76 @@ What changed (new files):
   desktop QGIS); `all` prints a summary table and fails if any target failed.
   shellcheck clean.
 
-Commands and outcomes (2026-09-29):
+Review fix round (2026-09-30), findings of the M0 review:
 
-- `scripts/test_qgis.sh all -q`:
+- fields (should): reproduced the provider-path behaviour on 3.34.15,
+  3.44.15, 4.0.3 and 4.2.1 (and 3.40.15 through the new test); docstring
+  corrected; new tests `test_provider_add_features_stores_qdatetime` (write
+  through `dataProvider().addFeatures` with `to_qdatetime`, read back the
+  same UTC time) and `test_provider_add_features_never_stores_a_python_datetime`
+  (records silent NULL on < 4.1 and rejection on 4.2, and that the value is
+  never stored).
+- settings (should + nit): reproduced `gpkg_path = ""` and `wsjtx_addr = "  "`
+  being stored and read back as `""`, `language = "klingon"` accepted,
+  `my_grid = "KN04FT12AB"` kept unchanged (core gives `KN04ft12`), and
+  `last_serbian = " sr_Cyrl "` rejected. Fixed as described above; new
+  parametrized cases in `test_stored_values_are_converted_or_defaulted` and
+  `test_invalid_values_are_rejected` (which now also checks that nothing was
+  stored), plus `test_empty_stored_gpkg_path_reads_as_default`,
+  `test_language_is_stored_as_a_canonical_code`,
+  `test_last_serbian_is_stripped`, `test_grid_normalization_matches_core`.
+  26 of the new cases failed before the fix.
+- Mutation check (scratch script, local QGIS 4.2.1): getter skipping
+  normalization/validation, empty text allowed, grid not normalized by core,
+  language not canonicalized, any language accepted, `last_serbian` not
+  stripped, empty `gpkg_path` or `rot_host` allowed -> all killed.
+
+Commands and outcomes (2026-09-30, after the fix round):
+
+- `scripts/test_qgis.sh all -q` (PASS on every target):
 
   | target | environment | result |
   |---|---|---|
-  | local | QGIS 4.2.1, Qt 6.10.2, Python 3.14 | 265 passed, 2 skipped |
-  | 3.44 | qgis/qgis:3.44-trixie, Qt 5.15.15 | 265 passed, 2 skipped |
-  | 4.0 | qgis/qgis:4.0-trixie, Qt 6.8.2 | 265 passed, 2 skipped |
-  | 3.34 | camptocamp/qgis-server:3.34, Qt 5.15.3, Python 3.10 | 252 passed, 15 skipped |
+  | local | QGIS 4.2.1, Qt 6.10.2, Python 3.14 | 306 passed, 2 skipped |
+  | 3.44 | qgis/qgis:3.44-trixie, Qt 5.15.15 | 306 passed, 2 skipped |
+  | 4.0 | qgis/qgis:4.0-trixie, Qt 6.8.2 | 306 passed, 2 skipped |
+  | 3.34 | camptocamp/qgis-server:3.34, Qt 5.15.3, Python 3.10 | 293 passed, 15 skipped |
+  | (extra) | qgis/qgis:3.40, QGIS 3.40.15, Qt 5.15.13, Python 3.12, same docker flags | 306 passed, 2 skipped |
 
   Skips: 2 x `core/qso.py is not written yet` (settings `station()` and
   `make_fields(QSO_FIELDS)`), 13 x `QtSvg is not installed in this image`
   (3.34 server image only; the XML and size checks of the icons still run).
+  Local 4.2.1 and 3.44 also pass with deprecation warnings as errors.
+  (First round, 2026-09-29: 265 passed / 252 passed on 3.34.)
 - `python3 -m pytest tests/core/test_smoke.py tests/core/test_architecture.py
-  tests/core/test_package.py -q`: 73 passed on Python 3.14 and on Python 3.9
-  (Docker `python:3.9-slim`); the architecture test is parametrized over the
-  core modules, so the count grows as modules are added.
+  tests/core/test_package.py -q`: 99 passed, 2 xfailed on Python 3.14 and on
+  Python 3.9.25 (Docker `python:3.9-slim`); the architecture tests are
+  parametrized over the modules, so the count grows as modules are added.
+- `tests/core/test_i18n_catalog.py` (project-wide i18n guard): 141 passed.
 - Every Python file of this task compiles with Python 3.9.
-- ruff 0.16.9 check and format: clean.
+- ruff 0.16.9 check and format on the 19 M0 Python files: clean.
 
 Manual checks still needed: none for this task (no GUI beyond M0-01).
 
 ## Notes
 
-- Contract change requests (docs/ARCHITECTURE.md not edited):
-  1. add `to_qdatetime(dt)` and `from_qdatetime(value)` to `qgis_io/fields.py`
-     (gpkg.py must convert `qso_datetime` with them, a Python `datetime`
-     attribute is rejected by the writer on all versions);
-  2. add `connect_message_log(slot)` to `qgis_io/compat.py` (log listeners
-     must use it on QGIS 4);
-  3. document the compat names (see the module; notably `SOURCE_VECTOR_*`,
-     `FILE_BEHAVIOR_FILE`, `NUMBER_INTEGER` / `NUMBER_DOUBLE`,
-     `ALG_FLAG_NO_THREADING`, `WRITER_*`, `SINK_FAST_INSERT`,
-     `REQUEST_NO_GEOMETRY`, `DOCK_*`, `DIALOG_*`, `MSGBOX_*`, `HOST_*`,
-     `BIND_*`, `SOCKET_*`, `NET_*`, `IO_*`);
-  4. `processing/provider.py` registers algorithms from the module-level list
-     `ALGORITHMS`; the M1..M5 algorithm classes must be appended there.
+- Contract change requests of the first round (fields datetime helpers,
+  `connect_message_log`, the compat names, `ALGORITHMS`) are now in
+  docs/ARCHITECTURE.md "Contract changes".
+- New contract change requests (docs/ARCHITECTURE.md not edited):
+  1. the `qgis_io/fields.py` entry says a Python `datetime` "is rejected by
+     `QgsVectorFileWriter`"; true for the writer, but through the OGR provider
+     (`layer.dataProvider().addFeatures`, the path gpkg.py will use) QGIS
+     3.34, 3.40, 3.44 and 4.0 report success and silently store NULL, only 4.2
+     rejects it. Suggested: "... rejected by `QgsVectorFileWriter`, and
+     silently stored as NULL by the OGR provider (`addFeatures` reports
+     success) on 3.34 - 4.0; 4.2 rejects it there".
+  2. the `settings.py` entry: add that empty `gpkg_path`, `wsjtx_addr`,
+     `rig_host`, `rot_host` and a `language` other than auto/en/sr_Latn/sr_Cyrl
+     are invalid; language codes are stored canonical (case, `-`/`_` and
+     surrounding blanks ignored); `my_grid` is normalized with
+     `core.maidenhead.normalize` (non-locator text kept, stripped); getters
+     apply the same normalization and validation to stored values.
 - The memory provider ignores `REQUEST_NO_GEOMETRY` (features keep their
   geometry); the OGR / GeoPackage provider honors it. Tests use a GeoPackage.
 - `qgis.PyQt.QtGui.QAction` exists on QGIS 3.34 too (QGIS re-exports it), but

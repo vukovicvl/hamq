@@ -56,8 +56,10 @@ On Windows the profile is in `%APPDATA%\QGIS\QGIS4\profiles\default` (use
 
 Restart QGIS, open *Plugins > Manage and Install Plugins*, enable *Show also
 experimental plugins* in *Settings*, then enable **HamQ** under *Installed*.
-The *HamQ* menu appears under *Plugins* and the provider *HamQ* in the
-Processing Toolbox. The *Plugin Reloader* plugin helps while developing.
+The *HamQ* menu appears under *Plugins* and the *HamQ* toolbar is added. The
+Processing provider *HamQ* is registered too, but QGIS lists a provider in the
+Processing Toolbox only once it has algorithms, so it shows up there with the
+first HamQ algorithm. The *Plugin Reloader* plugin helps while developing.
 
 ## Development
 

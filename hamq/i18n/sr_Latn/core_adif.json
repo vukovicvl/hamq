@@ -12,5 +12,6 @@
   "Record {index}: invalid tag {tag} skipped": "Zapis {index}: neispravna oznaka {tag} je preskočena",
   "Record {index}: length of field {field} does not match its data, this or the next field may be wrong": "Zapis {index}: dužina polja {field} ne odgovara podacima, ovo ili sledeće polje je možda pogrešno",
   "Record {index}: length of field {field} is given in bytes instead of characters, value corrected": "Zapis {index}: dužina polja {field} je data u bajtovima umesto u znakovima, vrednost je ispravljena",
-  "Record {index}: missing <EOR> at the end of the file, record kept": "Zapis {index}: nedostaje <EOR> na kraju fajla, zapis je zadržan"
+  "Record {index}: missing <EOR> at the end of the file, record kept": "Zapis {index}: nedostaje <EOR> na kraju fajla, zapis je zadržan",
+  "Record {index}: missing <EOR> before <EOH> (joined files?), record kept": "Zapis {index}: nedostaje <EOR> ispred <EOH> (spojeni fajlovi?), zapis je zadržan"
 }

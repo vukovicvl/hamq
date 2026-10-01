@@ -14,10 +14,10 @@ Thanks to AD1C for maintaining the country files.
 
 ## What was changed
 
-- 21 of the 346 entities are kept, in file order: Montenegro, Vienna Intl Ctr (WAE),
+- 20 of the 346 entities are kept, in file order: Montenegro, Vienna Intl Ctr (WAE),
   Croatia, Fed. Rep. of Germany, Bosnia-Herzegovina, Scotland, Shetland Islands (WAE),
-  Italy, African Italy (WAE), Sicily (WAE), Japan, United States, Guantanamo Bay, Hawaii,
-  Alaska, Austria, Asiatic Turkey, European Turkey (WAE), Canada, Australia, Serbia.
+  Italy, African Italy (WAE), Sicily (WAE), United States, Guantanamo Bay, Hawaii, Alaska,
+  Austria, Asiatic Turkey, European Turkey (WAE), Canada, Australia, Serbia (281 entries).
 - Header lines are unchanged. Prefix lists are trimmed to a subset; every kept entry is
   unchanged (overrides included) and stays on its original line. In cty.csv the first nine
   columns are unchanged and the prefix column keeps the subset of its own entries.

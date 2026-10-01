@@ -59,12 +59,13 @@ _DXCC_NAMES = {"TA": "Turkey"}
 
 # Suffixes meaning "no DXCC entity": maritime mobile, aeronautical mobile.
 _NO_ENTITY_SUFFIXES = frozenset(("MM", "AM"))
-# Two-letter activity suffixes that look like a prefix but are not locations: lighthouse (LH,
-# Norway), light tower and lightship (LT, LS, Argentina), WWFF flora and fauna (FF, France),
-# field day (FD, France), YL operator (YL, Latvia). WSJT-X ignores LH, LT, FF and FD the same
-# way. How common they are: the Big CTY of 15 September 2026 has to list CALL/LH 773 times,
-# CALL/YL 65, CALL/FF 62, CALL/LS 23, CALL/LT 16 and CALL/FD 8 times as exceptions under the
-# home entity, because a location rule gets them wrong.
+# Two-letter activity suffixes that look like a prefix but are not locations: lighthouse and
+# lightship activations (LH, LT, LS; prefixes of Norway and Argentina), WWFF flora and fauna
+# (FF) and field day (FD; France), YL operator (YL; Latvia). WSJT-X ignores LH, LT, FF and FD
+# the same way (LS and YL are locations there). The Big CTY of 15 September 2026 lists CALL/LH
+# 773 times, CALL/YL 65, CALL/FF 62, CALL/LS 23, CALL/LT 16 and CALL/FD 8 times as exceptions
+# under the home entity. A call whose suffix really is a location needs no exception, so the
+# counts show that the activity meaning occurs, not which meaning is more common.
 _MODIFIER_SUFFIXES = frozenset(("FD", "FF", "LH", "LS", "LT", "YL"))
 
 # Longer text is not a callsign (the longest call in the Big CTY has 13 characters). The limit
@@ -160,11 +161,25 @@ class CtyDatabase:
 
     @classmethod
     def from_text(cls, dat_text: str, csv_text: str | None = None) -> CtyDatabase:
-        """Parse cty.dat text and, optionally, cty.csv text (for ADIF DXCC codes)."""
+        """Parse cty.dat text and, optionally, cty.csv text (for ADIF DXCC codes).
+
+        A leading byte order mark is ignored. When ``csv_text`` is given, the entities it
+        leaves without a DXCC code (empty, truncated or mismatched cty.csv) are counted in a
+        warning that comes first in ``warnings``.
+        """
         warnings = _Warnings()
-        raws = _parse_dat(dat_text if isinstance(dat_text, str) else "", warnings.add)
-        codes = _parse_csv(csv_text, warnings.add) if isinstance(csv_text, str) else {}
+        raws = _parse_dat(_without_bom(dat_text), warnings.add)
+        has_csv = isinstance(csv_text, str)
+        codes = _parse_csv(_without_bom(csv_text), warnings.add) if has_csv else {}
         entities = _build_entities(raws, codes)
+        if not entities:
+            warnings.summary.append(tr("cty.dat contains no entities"))
+        elif has_csv:
+            missing = sum(1 for entity in entities if entity.dxcc is None)
+            if missing:
+                warnings.summary.append(
+                    tr("cty.csv: entities without a DXCC code: {count}").format(count=missing)
+                )
         exact: dict[str, tuple] = {}
         prefix: dict[str, tuple] = {}
         us_default = None
@@ -178,7 +193,7 @@ class CtyDatabase:
                     target[key] = default if values is None else (ent, *values)
         db = cls()
         db.entities = entities
-        db.warnings = warnings.result(no_entities=not entities)
+        db.warnings = warnings.result()
         db._exact = exact
         db._prefix = prefix
         db._max_prefix_len = max(map(len, prefix), default=0)
@@ -232,7 +247,8 @@ class CtyDatabase:
         4. ``PREFIX/CALL`` or ``CALL/PREFIX``: the shorter part is the location
            (``YU/DL1ABC`` and ``DL1ABC/YU`` -> Serbia). On equal length the part with the
            longer prefix match is (``K1A/KL7`` and ``KL7/K1A`` -> Alaska), on a tie the first
-           part. If the location matches nothing, the home call decides.
+           part. If the location matches nothing, the home call decides: its exact entry
+           (``4U1VIC/XX`` -> Vienna Intl Ctr), else steps 5 and 6.
         5. Longest-prefix match, overrides of the matched entry applied.
         6. KG4 rule, which cty.dat cannot express: a home call ``KG4`` plus one or three
            letters (``KG4A``, ``KG4ABC``) is a US call, not Guantanamo Bay (``KG4AB``); the
@@ -278,6 +294,9 @@ class CtyDatabase:
             key = self._prefix_key(location)
             if key is not None:
                 return _match(self._prefix[key], key, False)
+        hit = exact.get(home)  # the home call decides: its exact entry beats its prefix
+        if hit is not None:
+            return _match(hit, home, True)
         key = self._prefix_key(home)
         if key is None:
             return None
@@ -326,9 +345,14 @@ def _is_modifier(part: str) -> bool:
 
 
 class _Warnings:
-    """Collects warnings, keeping the first ``_MAX_WARNINGS`` and counting the rest."""
+    """Collects warnings: summaries first, then details capped at ``_MAX_WARNINGS``.
+
+    Summaries (no entities, entities without a DXCC code) are never capped; details beyond
+    the cap are only counted.
+    """
 
     def __init__(self) -> None:
+        self.summary: list[str] = []
         self.items: list[str] = []
         self.dropped = 0
 
@@ -338,9 +362,8 @@ class _Warnings:
         else:
             self.dropped += 1
 
-    def result(self, no_entities: bool) -> list[str]:
-        out = [tr("cty.dat contains no entities")] if no_entities else []
-        out.extend(self.items)
+    def result(self) -> list[str]:
+        out = self.summary + self.items
         if self.dropped:
             out.append(tr("Further warnings not listed: {count}").format(count=self.dropped))
         return out
@@ -569,6 +592,13 @@ def _build_entities(raws: list[_RawEntity], codes: dict[str, int]) -> list[Entit
             )
         )
     return entities
+
+
+def _without_bom(text: object) -> str:
+    """``text`` without a leading byte order mark; ``""`` for anything but a string."""
+    if not isinstance(text, str):
+        return ""
+    return text[1:] if text.startswith("\ufeff") else text
 
 
 def _read_text(path: str | os.PathLike) -> str:

@@ -629,4 +629,39 @@ Every widget with text implements `retranslate()` and is connected to
 
 ## Contract changes
 
-(none yet)
+Additive changes accepted after M0/M7 review (2026-09-30). They are part of the contract now.
+
+- `qgis_io/fields.py`: `FIELD_KINDS`, `to_qdatetime(value: datetime) -> QDateTime` (UTC) and
+  `from_qdatetime(value) -> datetime | None` (aware UTC). **Always** convert datetime
+  attributes with them: on QGIS 3.34, 3.44, 4.0 and 4.2 a Python `datetime` passed to
+  `QgsFeature.setAttributes` is rejected by `QgsVectorFileWriter` ("Could not convert value");
+  a UTC `QDateTime` is stored as `...Z` and reads back as UTC.
+- `qgis_io/compat.py`: `connect_message_log(slot) -> disconnect` — QGIS 4 emits only
+  `QgsMessageLog.messageReceivedWithFormat`, QGIS 3 only `messageReceived`; watch the log
+  through this helper (tests: `log_messages` fixture). Resolved constants (see the module
+  and `compat.NAMES`): `QGIS_VERSION_INT`, `IS_QT6`, `WKB_*`, `GEOMETRY_*`, `SOURCE_VECTOR_*`,
+  `FILE_BEHAVIOR_*`, `NUMBER_*`, `ALG_FLAG_NO_THREADING`, `PARAM_FLAG_*`, `MSG_*`,
+  `WRITER_*`, `SINK_FAST_INSERT`, `REQUEST_NO_GEOMETRY`, `TASK_CAN_CANCEL`, `DOCK_*`,
+  `DIALOG_*`, `MSGBOX_*`, `HEADER_*`, `EDIT_NO_TRIGGERS`, `SELECT_*`, `SELECTION_*`,
+  `SIZE_*`, `ALIGN_*`, `TOOLBUTTON_*`, `USER_ROLE`, `TEXT_*`, `CURSOR_*`, `HOST_*`, `BIND_*`,
+  `SOCKET_*`, `NET_*`, `IO_*`, plus `QAction` / `QActionGroup` (QGIS 3.34 does not export
+  `QActionGroup` from `qgis.PyQt.QtGui`). Missing a constant? Append it with a test.
+- `processing/provider.py`: `PROVIDER_ID = "hamq"`, `ALGORITHMS: list[type]` — algorithms
+  are registered by appending their classes to `ALGORITHMS`.
+- `gui/__init__.py`: `ICONS_DIR`, `icon_path(name)`, `get_icon(name)`; icons in
+  `resources/icons`: hamq, panel, import_adif, wsjtx, grid, locator, azimuthal, settings,
+  language, refresh, paths, radio, rotator.
+- `plugin.py` registry (extend through it, never bypass it): `add_action(icon, text,
+  callback=None, *, add_to_menu=True, add_to_toolbar=True, checkable=False, checked=False,
+  tooltip=None, enabled=True, object_name=None) -> QAction` — `text`/`tooltip` are the
+  untranslated sources marked with `tr_noop("...")` at the call site and are re-translated
+  by `retranslate_ui()`; `add_dock_widget(dock, area)`; `connect_signal(signal, slot)`
+  (disconnected on unload); `add_cleanup(callback)` (run LIFO on unload);
+  `_on_language_changed(language)` (retranslate + `provider.refreshAlgorithms()`);
+  `plugin_metadata()`; constants `MENU_TITLE`, `TOOLBAR_TITLE`, `LOG_TAG`.
+- `settings.py`: `SETTINGS_PREFIX`; setters normalize (callsign uppercase/stripped, locator
+  in Maidenhead case, strings stripped) and raise `ValueError` on invalid or out-of-range
+  values (ports outside 1..65535, `rig_poll_ms <= 0`, unknown `last_serbian`); getters
+  return the default for invalid stored values.
+- `core/hamlib.py`: `parse_mode` returns canonical `MODES` names; `cmd_set_mode` accepts
+  passband `-1` (keep the current passband); builders raise `TypeError` for non-numbers.

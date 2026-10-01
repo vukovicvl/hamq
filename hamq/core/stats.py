@@ -78,11 +78,11 @@ class QsoStats:
     """Statistics of a QSO log, see :func:`compute_stats`."""
 
     total: int
-    dxcc_count: int  # distinct dxcc codes; rows without a code count by country name
+    dxcc_count: int  # distinct codes > 0, plus names of code-less rows never seen with a code
     unique_calls: int
     grid_count: int  # distinct 4-char squares of the other station
     by_continent: dict[str, int]  # CONTINENTS order, then others / "?" last; zeros omitted
-    by_band: dict[str, int]  # band_sort_key order
+    by_band: dict[str, int]  # band_sort_key order, "?" last; band from freq_mhz when missing
     by_mode: dict[str, int]  # display_mode, descending count then name
     longest: LongestQso | None
     first_qso: datetime | None

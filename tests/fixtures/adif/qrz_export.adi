@@ -16,20 +16,20 @@ Records: 3
 <cont:2>OC
 <country:9>Australia
 <cqz:2>30
-<distance:5>15820
+<distance:5>15429
 <dxcc:3>150
 <email:0>
 <freq:8>14.07400
 <gridsquare:6>QF22oc
 <ituz:2>59
-<lat:11>S037 51.500
-<lon:11>E145 00.000
+<lat:11>S037 53.500
+<lon:11>E145 12.000
 <lotw_qsl_rcvd:1>Y
 <lotw_qsl_sent:1>Y
 <mode:3>FT8
 <my_city:7>Beograd
 <my_country:6>Serbia
-<my_gridsquare:6>KN04fs
+<my_gridsquare:6>KN04ft
 <my_lat:11>N044 48.750
 <my_lon:11>E020 27.672
 <name:4>Jack
@@ -61,7 +61,7 @@ Records: 3
 <mode:3>FT8
 <my_city:7>Beograd
 <my_country:6>Serbia
-<my_gridsquare:6>KN04fs
+<my_gridsquare:6>KN04ft
 <my_lat:11>N044 48.750
 <my_lon:11>E020 27.672
 <qsl_rcvd:1>N
@@ -86,7 +86,7 @@ Records: 3
 <mode:3>FT8
 <my_city:7>Beograd
 <my_country:6>Serbia
-<my_gridsquare:6>KN04fs
+<my_gridsquare:6>KN04ft
 <my_lat:11>N044 48.750
 <my_lon:11>E020 27.672
 <qsl_rcvd:1>N

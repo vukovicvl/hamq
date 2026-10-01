@@ -48,7 +48,13 @@ from qgis.core import (
 )
 from qgis.PyQt import QtGui, QtWidgets
 from qgis.PyQt.QtCore import QT_VERSION_STR, QIODevice, QMetaType, Qt, QVariant
-from qgis.PyQt.QtNetwork import QAbstractSocket, QHostAddress, QNetworkReply, QNetworkRequest
+from qgis.PyQt.QtNetwork import (
+    QAbstractSocket,
+    QHostAddress,
+    QNetworkInterface,
+    QNetworkReply,
+    QNetworkRequest,
+)
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -506,3 +512,67 @@ def connect_message_log(slot: Callable[[str, str, Any], None]) -> Callable[[], N
             signal.disconnect(handler)
 
     return disconnect
+
+
+# ---------------------------------------------------------------------------
+# M7-02: Hamlib TCP clients (hamq/net/hamlib_client.py)
+# ---------------------------------------------------------------------------
+
+from qgis.PyQt.QtNetwork import QNetworkProxy  # noqa: E402
+
+#: ``QAbstractSocket.errorOccurred`` code when the peer closed the connection.
+SOCKET_ERROR_REMOTE_CLOSED = _resolve(
+    "SOCKET_ERROR_REMOTE_CLOSED", (QAbstractSocket, "SocketError", "RemoteHostClosedError")
+)
+#: ``QTcpSocket.setProxy(QNetworkProxy(NET_PROXY_NONE))``: connect directly, never through
+#: the QGIS or system proxy (a Hamlib daemon is on the local network).
+NET_PROXY_NONE = _resolve("NET_PROXY_NONE", (QNetworkProxy, "ProxyType", "NoProxy"))
+
+
+# ---------------------------------------------------------------------------
+# M4-03 / M5-02: cty.dat download (hamq/net/cty_download.py) and WSJT-X
+# multicast listener (hamq/net/wsjtx_listener.py)
+# ---------------------------------------------------------------------------
+
+#: ``QNetworkRequest.setAttribute``: where a reply may be loaded from (network or cache).
+NET_ATTR_CACHE_LOAD_CONTROL = _resolve(
+    "NET_ATTR_CACHE_LOAD_CONTROL", (QNetworkRequest, "Attribute", "CacheLoadControlAttribute")
+)
+#: ``QNetworkRequest.setAttribute``: ``False`` keeps the reply out of the QGIS network cache.
+NET_ATTR_CACHE_SAVE_CONTROL = _resolve(
+    "NET_ATTR_CACHE_SAVE_CONTROL", (QNetworkRequest, "Attribute", "CacheSaveControlAttribute")
+)
+#: Cache load control: always load from the network, never from the cache.
+NET_CACHE_ALWAYS_NETWORK = _resolve(
+    "NET_CACHE_ALWAYS_NETWORK", (QNetworkRequest, "CacheLoadControl", "AlwaysNetwork")
+)
+#: ``QNetworkInterface.flags()``: the interface is up.
+NETIF_IS_UP = _resolve("NETIF_IS_UP", (QNetworkInterface, "InterfaceFlag", "IsUp"))
+#: ``QNetworkInterface.flags()``: the loopback interface (127.0.0.1).
+NETIF_IS_LOOPBACK = _resolve(
+    "NETIF_IS_LOOPBACK", (QNetworkInterface, "InterfaceFlag", "IsLoopBack")
+)
+#: ``QNetworkInterface.flags()``: the interface supports multicast.
+NETIF_CAN_MULTICAST = _resolve(
+    "NETIF_CAN_MULTICAST", (QNetworkInterface, "InterfaceFlag", "CanMulticast")
+)
+
+
+# ---------------------------------------------------------------------------
+# M6-02 / M0-03 / M3-03: language switch button (hamq/gui/language.py), settings
+# dialog (hamq/gui/settings_dialog.py), azimuthal map labels (hamq/gui/azimuthal.py)
+# ---------------------------------------------------------------------------
+
+#: ``QToolButton.setPopupMode``: a click runs the button, its arrow opens the menu.
+TOOLBUTTON_MENU_BUTTON_POPUP = _resolve(
+    "TOOLBUTTON_MENU_BUTTON_POPUP", (QToolButton, "ToolButtonPopupMode", "MenuButtonPopup")
+)
+#: ``QgsPalLayerSettings.placement``: labels parallel to lines (``Qgis.LabelPlacement``
+#: exists since QGIS 3.26).
+LABEL_PLACEMENT_LINE = _resolve("LABEL_PLACEMENT_LINE", (Qgis, "LabelPlacement", "Line"))
+#: ``QFileDialog.getSaveFileName(..., options=...)``: picking an existing file is not
+#: an overwrite (the GeoPackage with the log usually exists already).
+FILE_DIALOG_DONT_CONFIRM_OVERWRITE = _resolve(
+    "FILE_DIALOG_DONT_CONFIRM_OVERWRITE",
+    (QtWidgets, "QFileDialog", "Option", "DontConfirmOverwrite"),
+)

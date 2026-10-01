@@ -52,7 +52,9 @@ packets report frequency 0; later ones report 14 074 000 Hz.
   `0xFC`, so the text is not valid UTF-8. Serbian `Đ` and `đ` (not in Latin-1)
   arrived as `?` and cannot be recovered. The same comment arrived intact, in UTF-8,
   in the QSO Logged message.
-- ADIF lengths count characters (`<comment:15>`), not bytes.
+- ADIF lengths count characters (`<comment:15>`), not bytes. More exactly they are
+  `QString::size()`, in UTF-16 code units, so a character above U+FFFF (an emoji)
+  would count 2 and arrive as `??`.
 - Empty fields are written with length 0 (`<rst_sent:0>`).
 - `FREQ` is the dial frequency plus the Tx audio offset (14 074 000 + 1500 Hz), in
   MHz with 6 decimals.

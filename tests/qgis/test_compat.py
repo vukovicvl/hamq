@@ -132,6 +132,17 @@ EXPECTED = {
     "SOCKET_CONNECTED": ({3}, {"SocketState"}),
     "SOCKET_BOUND": ({4}, {"SocketState"}),
     "SOCKET_ERROR_ADDRESS_IN_USE": ({8}, {"SocketError"}),
+    "SOCKET_ERROR_REMOTE_CLOSED": ({1}, {"SocketError"}),  # M7-02
+    "NET_PROXY_NONE": ({2}, {"ProxyType"}),  # M7-02
+    "NET_ATTR_CACHE_LOAD_CONTROL": ({4}, {"Attribute"}),  # M4-03
+    "NET_ATTR_CACHE_SAVE_CONTROL": ({5}, {"Attribute"}),  # M4-03
+    "NET_CACHE_ALWAYS_NETWORK": ({0}, {"CacheLoadControl"}),  # M4-03
+    "NETIF_IS_UP": ({0x1}, {"InterfaceFlag"}),  # M5-02
+    "NETIF_IS_LOOPBACK": ({0x8}, {"InterfaceFlag"}),  # M5-02
+    "NETIF_CAN_MULTICAST": ({0x20}, {"InterfaceFlag"}),  # M5-02
+    "TOOLBUTTON_MENU_BUTTON_POPUP": ({1}, {"ToolButtonPopupMode"}),  # M6-02
+    "LABEL_PLACEMENT_LINE": ({2}, {"LabelPlacement"}),  # M3-03
+    "FILE_DIALOG_DONT_CONFIRM_OVERWRITE": ({0x4}, {"Option"}),  # M0-03
     "NET_ATTR_HTTP_STATUS": ({0}, {"Attribute"}),
     "NET_ATTR_REDIRECT_POLICY": ({22, 25}, {"Attribute"}),
     "NET_REDIRECT_NO_LESS_SAFE": ({1}, {"RedirectPolicy"}),
@@ -544,3 +555,87 @@ def test_io_open_modes(tmp_path, qgis_app):
     assert handle.open(compat.IO_READ_ONLY | compat.IO_TEXT)
     assert bytes(handle.readAll()).splitlines() == [b"line 1", b"line 2"]
     handle.close()
+
+
+# --- M7-02: Hamlib TCP clients ------------------------------------------------------
+
+
+def test_tcp_remote_close_and_no_proxy(qgis_app):
+    import time
+
+    from qgis.PyQt.QtNetwork import QNetworkProxy, QTcpServer, QTcpSocket
+
+    server = QTcpServer()
+    assert server.listen(QHostAddress(compat.HOST_LOCALHOST), 0)
+    client = QTcpSocket()
+    client.setProxy(QNetworkProxy(compat.NET_PROXY_NONE))
+    assert client.proxy().type() == compat.NET_PROXY_NONE
+    errors = []
+    client.errorOccurred.connect(errors.append)
+    client.connectToHost("127.0.0.1", server.serverPort())
+    assert client.waitForConnected(5000)
+    assert server.waitForNewConnection(5000)
+    server.nextPendingConnection().disconnectFromHost()
+    deadline = time.monotonic() + 5
+    while not errors and time.monotonic() < deadline:
+        qgis_app.processEvents()
+        time.sleep(0.002)
+    assert errors == [compat.SOCKET_ERROR_REMOTE_CLOSED]
+    assert client.error() == compat.SOCKET_ERROR_REMOTE_CLOSED
+    client.abort()
+    server.close()
+
+
+# --- M4-03 / M5-02: cty.dat download and WSJT-X multicast ---------------------------
+
+
+def test_network_cache_attributes():
+    request = QNetworkRequest()
+    assert request.attribute(compat.NET_ATTR_CACHE_LOAD_CONTROL) is None
+    request.setAttribute(compat.NET_ATTR_CACHE_LOAD_CONTROL, compat.NET_CACHE_ALWAYS_NETWORK)
+    request.setAttribute(compat.NET_ATTR_CACHE_SAVE_CONTROL, False)
+    assert numeric_or_int(request.attribute(compat.NET_ATTR_CACHE_LOAD_CONTROL)) == 0
+    assert request.attribute(compat.NET_ATTR_CACHE_SAVE_CONTROL) is False
+
+
+def test_network_interface_flags(qgis_app):
+    from qgis.PyQt.QtNetwork import QNetworkInterface
+
+    interfaces = QNetworkInterface.allInterfaces()
+    loopback = [i for i in interfaces if i.flags() & compat.NETIF_IS_LOOPBACK]
+    assert loopback, [i.name() for i in interfaces]
+    assert all(i.flags() & compat.NETIF_IS_UP for i in loopback)
+    for interface in interfaces:
+        flags = interface.flags()
+        assert bool(flags & compat.NETIF_CAN_MULTICAST) in (True, False)
+        assert bool(flags & (compat.NETIF_CAN_MULTICAST | compat.NETIF_IS_LOOPBACK)) == bool(
+            (flags & compat.NETIF_CAN_MULTICAST) or (flags & compat.NETIF_IS_LOOPBACK)
+        )
+
+
+# --- M6-02 / M0-03 / M3-03: language button, settings dialog, azimuthal labels ------
+
+
+def test_menu_button_popup(qgis_app):
+    button = QToolButton()
+    button.setPopupMode(compat.TOOLBUTTON_MENU_BUTTON_POPUP)
+    assert button.popupMode() == compat.TOOLBUTTON_MENU_BUTTON_POPUP
+    assert button.popupMode() != compat.TOOLBUTTON_INSTANT_POPUP
+
+
+def test_label_placement_line(qgis_app):
+    from qgis.core import QgsPalLayerSettings
+
+    settings = QgsPalLayerSettings()
+    settings.placement = compat.LABEL_PLACEMENT_LINE
+    assert settings.placement == compat.LABEL_PLACEMENT_LINE
+
+
+def test_file_dialog_dont_confirm_overwrite(qgis_app):
+    from qgis.PyQt.QtWidgets import QFileDialog
+
+    dialog = QFileDialog()
+    assert not dialog.testOption(compat.FILE_DIALOG_DONT_CONFIRM_OVERWRITE)
+    dialog.setOption(compat.FILE_DIALOG_DONT_CONFIRM_OVERWRITE, True)
+    assert dialog.testOption(compat.FILE_DIALOG_DONT_CONFIRM_OVERWRITE)
+    dialog.deleteLater()
