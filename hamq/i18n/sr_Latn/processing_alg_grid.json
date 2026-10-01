@@ -1,0 +1,18 @@
+{
+  "Extended square (8 characters, 30\" x 15\")": "Prošireni podkvadrat (8 znakova, 30\" x 15\")",
+  "Extent": "Obuhvat",
+  "Extent in EPSG:4326: longitude {west} to {east}, latitude {south} to {north}": "Obuhvat u EPSG:4326: geografska dužina od {west} do {east}, širina od {south} do {north}",
+  "Field (2 characters, 20° x 10°)": "Polje (2 znaka, 20° x 10°)",
+  "Generate Maidenhead grid": "Napravi Maidenhead mrežu",
+  "Generates the Maidenhead locator grid as polygons for an extent and a level: field (2 characters, 20° x 10°), square (4 characters, 2° x 1°), subsquare (6 characters, 5' x 2.5') or extended square (8 characters, 30\" x 15\"). The extent is converted to EPSG:4326 and grown to whole cells; an extent across the antimeridian is split there. Each cell has its locator in the field {field}. At most {limit} cells are generated: for a larger grid choose a smaller extent or a coarser level.": "Pravi mrežu Maidenhead lokatora kao poligone za zadati obuhvat i nivo: polje (2 znaka, 20° x 10°), kvadrat (4 znaka, 2° x 1°), podkvadrat (6 znakova, 5' x 2,5') ili prošireni podkvadrat (8 znakova, 30\" x 15\"). Obuhvat se pretvara u EPSG:4326 i proširuje do celih ćelija; obuhvat koji prelazi antimeridijan deli se na njemu. Svaka ćelija ima svoj lokator u polju {field}. Pravi se najviše {limit} ćelija: za veću mrežu izaberite manji obuhvat ili krupniji nivo.",
+  "Grid cells: {count}": "Broj ćelija mreže: {count}",
+  "Level": "Nivo",
+  "Maidenhead grid": "Maidenhead mreža",
+  "Maidenhead, locator, grid, QTH, square, ham radio": "Maidenhead, lokator, mreža, QTH, kvadrat, radio-amater",
+  "Square (4 characters, 2° x 1°)": "Kvadrat (4 znaka, 2° x 1°)",
+  "Subsquare (6 characters, 5' x 2.5')": "Podkvadrat (6 znakova, 5' x 2,5')",
+  "The extent lies outside the world or cannot be converted to EPSG:4326": "Obuhvat je van granica sveta ili ga nije moguće pretvoriti u EPSG:4326",
+  "The grid style could not be applied: {error}": "Stil mreže nije moguće primeniti: {error}",
+  "The grid would have {count} cells, more than the limit of {limit}. Choose a smaller extent or a coarser level.": "Mreža bi imala {count} ćelija, više od ograničenja od {limit}. Izaberite manji obuhvat ili krupniji nivo.",
+  "Unknown grid level {level}": "Nepoznat nivo mreže {level}"
+}

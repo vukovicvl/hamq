@@ -1,0 +1,11 @@
+{
+  "Maidenhead locators": "Maidenhead lokatori",
+  "More warnings in the QGIS message log (HamQ tab): {count}": "Još upozorenja u QGIS dnevniku poruka (kartica HamQ): {count}",
+  "My QTH locator": "Moj QTH lokator",
+  "QSO log": "Log veza",
+  "QTH locator {locator} is not a valid Maidenhead locator (e.g. KN04ft).": "QTH lokator {locator} nije ispravan Maidenhead lokator (npr. KN04ft).",
+  "The HamQ panel and layers could not be told about the changes in {path}: {error}": "HamQ panel i slojevi nisu obavešteni o izmenama u {path}: {error}",
+  "Use cty.dat for DXCC data and positions missing in the log": "Koristi cty.dat za DXCC podatke i pozicije kojih nema u logu",
+  "cty.dat has not been downloaded, so DXCC data and positions are not looked up from the callsigns. Download it in the HamQ settings (DXCC data).": "cty.dat nije preuzet, pa se DXCC podaci i pozicije ne određuju na osnovu pozivnih znakova. Preuzmite ga u HamQ podešavanjima (DXCC podaci).",
+  "cty.dat loaded, DXCC entities: {count}": "cty.dat je učitan, broj DXCC entiteta: {count}"
+}

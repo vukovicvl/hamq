@@ -68,11 +68,17 @@ Radio amater uveze svoj ADIF log i za par minuta vidi sve svoje veze na mapi, sa
 | distance_km | real | geodetsko, WGS84 |
 | bearing_deg | real | početni azimut od mog QTH-a |
 | loc_source | text | `latlon`, `grid`, `cty` (preciznost pozicije) |
-| source | text | `adif:<fajl>` ili `wsjtx` |
+| source | text | `adif:<fajl>`, `wsjtx` ili `manual` (ručni unos u HamQ dijalogu) |
 | dedup_key | text | UNIQUE: call + minut + band + mode |
 | adif_extra | text | JSON sa ostalim ADIF poljima |
 
 **`qso_path`** (MultiLineString, EPSG:4326): `qso_fid`, `distance_km`, `bearing_deg`, `band`, `mode`. Geodetska linija, presečena na antimeridijanu.
+
+**`hamq_meta`** (tabela bez geometrije): `key` (text, UNIQUE), `value` (text). Čuva `schema_version` (trenutno `1`) za buduće migracije.
+
+**Indeksi:** `qso_dedup_key_idx` (UNIQUE na `qso.dedup_key`), `qso_path_qso_fid_idx` (na `qso_path.qso_fid`).
+
+Sva pisanja u log idu kroz `qgis_io/gpkg.py` (`insert_qsos`, `recalculate`), direktno preko SQLite-a u transakcijama po 1000 redova. QGIS provajderi se ne koriste za pisanje iz pozadinskih niti: u stres testovima su na QGIS 4.2 pravili deadlock ili pad kad korisnik istovremeno čuva izmene istog GeoPackage-a.
 
 ## Faze
 

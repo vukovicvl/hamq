@@ -608,3 +608,21 @@ STYLE_CATEGORY_LABELING = _resolve(
 )
 #: ``QgsSimpleFillSymbolLayer.brushStyle()`` of a fill without a brush (grid cells).
 BRUSH_NONE = _resolve("BRUSH_NONE", (Qt, "BrushStyle", "NoBrush"))
+#: ``QDateTime.toString`` format of GeoPackage datetimes: ``2026-09-15T18:45:00.000Z`` (UTC).
+DATE_FORMAT_ISO_MS = _resolve("DATE_FORMAT_ISO_MS", (Qt, "DateFormat", "ISODateWithMs"))
+
+
+# ---------------------------------------------------------------------------
+# INT-01: background statistics refresh (hamq/controller.py)
+# ---------------------------------------------------------------------------
+
+#: ``QgsTask`` flag: QGIS may cancel the task without asking (closing QGIS or a project).
+TASK_CANCEL_WITHOUT_PROMPT = _resolve(
+    "TASK_CANCEL_WITHOUT_PROMPT",
+    (QgsTask, "Flag", "CancelWithoutPrompt"),
+    (QgsTask, "CancelWithoutPrompt"),
+)
+#: ``QgsTask`` flag: not listed in the QGIS task manager and status bar.
+TASK_HIDDEN = _resolve("TASK_HIDDEN", (QgsTask, "Flag", "Hidden"), (QgsTask, "Hidden"))
+#: ``QgsTask`` flag: no operating-system notification when the task ends.
+TASK_SILENT = _resolve("TASK_SILENT", (QgsTask, "Flag", "Silent"), (QgsTask, "Silent"))

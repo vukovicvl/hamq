@@ -1,22 +1,73 @@
-"""Plugin lifecycle: classFactory -> initGui -> unload, twice (reload bug check)."""
+"""Plugin lifecycle: classFactory -> initGui -> unload, twice (reload bug check), and the
+wiring of the actions, menu, toolbar widgets and panel (INT-01)."""
 
 from __future__ import annotations
 
+import functools
+import gc
 import os
+import socket
+import time
 import xml.etree.ElementTree as ET
 
 import pytest
-from qgis.core import QgsApplication, QgsProcessingAlgorithm, QgsProcessingParameterString
+from qgis.core import (
+    QgsApplication,
+    QgsCoordinateReferenceSystem,
+    QgsProcessingAlgorithm,
+    QgsProcessingParameterString,
+    QgsProject,
+)
 from qgis.PyQt import sip
-from qgis.PyQt.QtCore import QModelIndex, Qt
-from qgis.PyQt.QtWidgets import QToolBar
+from qgis.PyQt.QtCore import QCoreApplication, QEvent, QModelIndex, Qt
+from qgis.PyQt.QtWidgets import QDockWidget, QMenu, QPushButton, QToolBar
 
 import hamq
+from hamq import controller as controller_module
 from hamq import plugin as plugin_module
+from hamq.core.i18n import LANG_EN, set_language
 from hamq.events import events
 from hamq.gui import ICONS_DIR, icon_path
+from hamq.gui.dock import HamQDock
+from hamq.gui.language import SWITCH_TITLE, LanguageSwitchButton
+from hamq.gui.locator_search import LocatorSearchWidget
+from hamq.gui.settings_dialog import SettingsDialog
+from hamq.net.cty_download import CtyManager
 from hamq.processing import provider as provider_module
 from hamq.qgis_io import compat
+from hamq.settings import HamQSettings
+
+#: Plugins > HamQ, in order (the language submenu is the bilingual SWITCH_TITLE).
+MENU_TEXTS = [
+    "Show HamQ panel",
+    "Import ADIF...",
+    "Listen to WSJT-X",
+    "Log QSO...",
+    "Point antenna on map",
+    "Azimuthal map",
+    "Maidenhead grid...",
+    "Locator to point...",
+    "Recalculate distances and paths...",
+    "Download cty.dat",
+    "Settings...",
+    SWITCH_TITLE,
+    "About HamQ",
+]
+#: Actions in the HamQ toolbar, before the locator search and the language switch.
+TOOLBAR_TEXTS = [
+    "Show HamQ panel",
+    "Import ADIF...",
+    "Listen to WSJT-X",
+    "Point antenna on map",
+    "Azimuthal map",
+    "Settings...",
+]
+ALGORITHM_IDS = [
+    "hamq:locator_to_point",
+    "hamq:maidenhead_grid",
+    "hamq:import_adif",
+    "hamq:recalculate",
+]
 
 REQUIRED_ICONS = (
     "hamq.svg",
@@ -52,6 +103,68 @@ def hamq_menu(main_window):
 def language_receivers() -> int:
     obj = events()
     return obj.receivers(obj.languageChanged)
+
+
+def all_receivers() -> dict[str, int]:
+    """Receivers of every process-wide signal the plugin connects to.
+
+    Objects of earlier tests that only wait for Python's garbage collector or for a
+    deferred delete are collected first: they would leave while the test runs.
+    """
+    gc.collect()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    hub = events()
+    project = QgsProject.instance()
+    return {
+        "languageChanged": hub.receivers(hub.languageChanged),
+        "settingsChanged": hub.receivers(hub.settingsChanged),
+        "dataChanged": hub.receivers(hub.dataChanged),
+        "readProject": project.receivers(project.readProject),
+        "cleared": project.receivers(project.cleared),
+        "crsChanged": project.receivers(project.crsChanged),
+    }
+
+
+def free_udp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("0.0.0.0", 0))
+        return probe.getsockname()[1]
+
+
+def wait_until(predicate, timeout=3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        QgsApplication.processEvents()
+        if predicate():
+            return True
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.002)
+
+
+def bar_texts(iface) -> list[str]:
+    return [item.text() for item in iface.messageBar().items()]
+
+
+def action_by_text(plugin, text):
+    return next(action for action in plugin.actions() if action.text() == text)
+
+
+@pytest.fixture(autouse=True)
+def plugin_env(clean_settings, tmp_path, monkeypatch):
+    """English, the log and a cty.dat cache in tmp_path; the project is cleared afterwards."""
+    settings = HamQSettings()
+    settings.language = LANG_EN
+    settings.gpkg_path = str(tmp_path / "hamq_log.gpkg")
+    set_language(LANG_EN)
+    monkeypatch.setattr(
+        controller_module,
+        "CtyManager",
+        functools.partial(CtyManager, cache_path=str(tmp_path / "cty" / "cty.dat")),
+    )
+    yield settings
+    set_language(LANG_EN)
+    QgsProject.instance().clear()
 
 
 def toolbox_model():
@@ -116,7 +229,10 @@ def test_class_factory_returns_plugin(iface):
 
 
 def test_load_and_unload_twice(iface, process_events, log_messages):
-    receivers_before = language_receivers()
+    iface.mapCanvas()  # made on first use; the canvas itself connects to the project
+    iface.messageBar()
+    process_events()  # objects of earlier tests waiting for deletion still count otherwise
+    receivers_before = all_receivers()
     for _round in range(2):
         plugin = hamq.classFactory(iface)
         plugin.initGui()
@@ -125,6 +241,7 @@ def test_load_and_unload_twice(iface, process_events, log_messages):
         provider = QgsApplication.processingRegistry().providerById("hamq")
         assert provider is not None
         assert provider.name() == "HamQ"
+        assert sorted(alg.id() for alg in provider.algorithms()) == sorted(ALGORITHM_IDS)
 
         toolbar = iface.mainWindow().findChild(QToolBar, plugin_module.TOOLBAR_OBJECT_NAME)
         assert toolbar is not None
@@ -133,12 +250,24 @@ def test_load_and_unload_twice(iface, process_events, log_messages):
 
         menu = hamq_menu(iface.mainWindow())
         assert menu is not None
-        assert [action.text() for action in menu.actions()] == ["About HamQ"]
-        assert plugin.about_action in toolbar.actions()
-        assert language_receivers() == receivers_before + 1
+        assert [action.text() for action in menu.actions()] == MENU_TEXTS
+        assert plugin.about_action not in toolbar.actions()
+
+        controller = plugin.controller
+        dock = iface.mainWindow().findChild(QDockWidget, "HamQDock")
+        assert isinstance(dock, HamQDock)
+        assert dock is controller.dock
+        assert controller.is_started()
+        loaded_receivers = all_receivers()
+        for name in ("languageChanged", "settingsChanged", "dataChanged"):
+            assert loaded_receivers[name] > receivers_before[name], name
 
         actions = plugin.actions()
-        assert actions == [plugin.about_action]
+        assert len(actions) == len(MENU_TEXTS) - 1  # the language submenu is no action
+        language_menu = plugin.language_menu
+        search, button = plugin.locator_search, plugin.language_button
+        tool = controller.rotator_tool
+        canvas = iface.mapCanvas()
 
         plugin.unload()
         process_events()
@@ -146,12 +275,17 @@ def test_load_and_unload_twice(iface, process_events, log_messages):
         assert "hamq" not in provider_ids()
         assert plugin.provider is None
         assert plugin.toolbar is None
+        assert plugin.controller is None
         assert iface.mainWindow().findChild(QToolBar, plugin_module.TOOLBAR_OBJECT_NAME) is None
         assert sip.isdeleted(toolbar)
         assert hamq_menu(iface.mainWindow()) is None
         assert all(sip.isdeleted(action) for action in actions)
         assert plugin.actions() == []
-        assert language_receivers() == receivers_before
+        assert iface.mainWindow().findChild(QDockWidget, "HamQDock") is None
+        for obj in (dock, controller, language_menu, search, button, tool):
+            assert sip.isdeleted(obj)
+        assert canvas.mapTool() is None
+        assert all_receivers() == receivers_before
 
     # nothing for the log panel: no warning or error from HamQ, Processing or Qt
     problems = [m for m in log_messages if m[2] in (compat.MSG_WARNING, compat.MSG_CRITICAL)]
@@ -313,8 +447,8 @@ def test_provider_properties(loaded):
     assert provider.longName()
     assert not provider.icon().isNull()
     assert os.path.isfile(provider.svgIconPath())
-    assert provider_module.ALGORITHMS == []
-    assert provider.algorithms() == []
+    assert len(provider_module.ALGORITHMS) == len(ALGORITHM_IDS)
+    assert sorted(alg.id() for alg in provider.algorithms()) == sorted(ALGORITHM_IDS)
 
 
 class _DummyAlgorithm(QgsProcessingAlgorithm):
@@ -341,7 +475,7 @@ def test_provider_loads_algorithm_classes(loaded, monkeypatch):
     assert QgsApplication.processingRegistry().algorithmById("hamq:dummy") is not None
     monkeypatch.undo()
     loaded.provider.refreshAlgorithms()
-    assert loaded.provider.algorithms() == []
+    assert sorted(alg.id() for alg in loaded.provider.algorithms()) == sorted(ALGORITHM_IDS)
 
 
 def test_processing_runs_provider_algorithms(loaded, qgis_processing, monkeypatch):
@@ -450,3 +584,215 @@ def test_icon_is_valid_svg(name):
     renderer = qtsvg.QSvgRenderer(path)
     assert renderer.isValid()
     assert not renderer.defaultSize().isEmpty()
+
+
+# --------------------------------------------------------------------------- INT-01 wiring
+
+
+def test_menu_toolbar_and_icons(loaded):
+    toolbar = loaded.toolbar
+    texts = [action.text() for action in toolbar.actions() if action.text()]
+    assert texts[: len(TOOLBAR_TEXTS)] == TOOLBAR_TEXTS
+    widgets = [toolbar.widgetForAction(action) for action in toolbar.actions()]
+    assert loaded.locator_search in widgets
+    assert loaded.language_button in widgets
+    assert isinstance(loaded.locator_search, LocatorSearchWidget)
+    assert isinstance(loaded.language_button, LanguageSwitchButton)
+    assert loaded.language_button.text() == "EN"
+    assert loaded.language_button.menu() is loaded.language_menu
+    for action in loaded.actions():
+        assert not action.icon().isNull(), action.text()
+    checkable = {action.text() for action in loaded.actions() if action.isCheckable()}
+    assert checkable == {
+        "Show HamQ panel",
+        "Listen to WSJT-X",
+        "Point antenna on map",
+        "Azimuthal map",
+    }
+    submenu = next(
+        action.menu()
+        for action in hamq_menu(loaded.iface.mainWindow()).actions()
+        if action.text() == SWITCH_TITLE
+    )
+    assert isinstance(submenu, QMenu)
+    assert [action.text() for action in submenu.actions() if action.text()] == [
+        "Auto (QGIS language)",
+        "English",
+        "Srpski (latinica)",
+        "Српски (ћирилица)",
+    ]
+    assert submenu.actions()[2].isChecked()  # English (after Auto and the separator)
+
+
+def test_panel_action_follows_the_dock(loaded, process_events):
+    main = loaded.iface.mainWindow()
+    main.show()
+    process_events()
+    dock = loaded.controller.dock
+    action = loaded.panel_action
+    assert dock.isVisible()
+    assert action.isChecked()
+    action.trigger()  # hide
+    assert dock.isHidden()
+    assert not action.isChecked()
+    action.trigger()  # show again
+    assert not dock.isHidden()
+    assert action.isChecked()
+    dock.close()  # the close button of the panel
+    process_events()
+    assert not action.isChecked()
+    main.hide()
+
+
+def test_listen_action_starts_and_stops_the_listener(loaded, plugin_env):
+    plugin_env.wsjtx_port = free_udp_port()
+    controller = loaded.controller
+    loaded.listen_action.trigger()
+    assert controller.is_listening()
+    assert controller.listener.port() == plugin_env.wsjtx_port
+    assert loaded.listen_action.isChecked()
+    listen_button = controller.dock.findChild(QPushButton, "HamQListenButton")
+    assert listen_button.isChecked()
+    loaded.listen_action.trigger()
+    assert not controller.is_listening()
+    assert not loaded.listen_action.isChecked()
+    assert not listen_button.isChecked()
+    # the panel's button drives the same listener and the action follows
+    listen_button.click()
+    assert controller.is_listening()
+    assert loaded.listen_action.isChecked()
+    listen_button.click()
+    assert not controller.is_listening()
+    assert not loaded.listen_action.isChecked()
+
+
+def test_listen_action_unchecks_when_the_port_is_taken(loaded, plugin_env):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as blocker:
+        blocker.bind(("0.0.0.0", 0))  # no SO_REUSEADDR: the port cannot be shared
+        plugin_env.wsjtx_port = blocker.getsockname()[1]
+        loaded.listen_action.trigger()
+        assert not loaded.controller.is_listening()
+        assert not loaded.listen_action.isChecked()
+        assert any(str(plugin_env.wsjtx_port) in text for text in bar_texts(loaded.iface))
+
+
+def test_point_action_needs_a_connected_rotator(loaded):
+    loaded.point_action.trigger()
+    assert not loaded.point_action.isChecked()
+    assert loaded.iface.mapCanvas().mapTool() is not loaded.controller.rotator_tool
+    assert any("rotator is not connected" in text for text in bar_texts(loaded.iface))
+
+
+def test_azimuthal_action(loaded, plugin_env, process_events):
+    project = QgsProject.instance()
+    project.setCrs(QgsCoordinateReferenceSystem("EPSG:3857"))
+    loaded.azimuthal_action.trigger()  # no locator yet: stays off with a warning
+    assert not loaded.azimuthal_action.isChecked()
+    assert project.crs().authid() == "EPSG:3857"
+    plugin_env.my_grid = "KN04ft"
+    loaded.azimuthal_action.trigger()
+    assert loaded.azimuthal_action.isChecked()
+    assert "aeqd" in project.crs().toProj()
+    loaded.unload()  # restores the CRS and removes the helper layer
+    process_events()
+    assert project.crs().authid() == "EPSG:3857"
+    assert project.mapLayersByName("Azimuthal map grid (KN04ft)") == []
+
+
+def test_processing_actions_open_their_dialogs(loaded, qgis_processing, monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        qgis_processing, "execAlgorithmDialog", lambda alg, params=None: opened.append(alg) or {}
+    )
+    for text in ("Import ADIF...", "Maidenhead grid...", "Locator to point..."):
+        action_by_text(loaded, text).trigger()
+    loaded.recalculate_action.trigger()
+    loaded.controller.dock.importRequested.emit()  # the panel's "Import ADIF..." button
+    assert opened == [
+        "hamq:import_adif",
+        "hamq:maidenhead_grid",
+        "hamq:locator_to_point",
+        "hamq:recalculate",
+        "hamq:import_adif",
+    ]
+
+
+def test_download_and_settings_actions(loaded, monkeypatch):
+    downloads, dialogs = [], []
+    monkeypatch.setattr(loaded.controller.cty_manager, "download", lambda: downloads.append(1))
+
+    def fake_exec(dialog):
+        dialogs.append(dialog.windowTitle())
+        return compat.DIALOG_REJECTED
+
+    monkeypatch.setattr(SettingsDialog, "exec", fake_exec)
+    loaded.cty_action.trigger()
+    assert downloads == [1]
+    assert "Downloading cty.dat…" in bar_texts(loaded.iface)
+    loaded.settings_action.trigger()
+    loaded.controller.dock.settingsRequested.emit()
+    assert dialogs == ["HamQ settings", "HamQ settings"]
+
+
+def test_first_run_hints(loaded):
+    controller = loaded.controller
+    assert sorted(controller.hint_keys()) == ["cty", "grid"]
+    texts = bar_texts(loaded.iface)
+    assert any("cty.dat" in text for text in texts)
+    assert any("QTH locator" in text for text in texts)
+    loaded.unload()
+    assert not any("cty.dat" in text for text in bar_texts(loaded.iface))
+
+
+def test_init_gui_failure_leaves_nothing_behind(iface, process_events, monkeypatch):
+    iface.mapCanvas()
+    process_events()
+    before = all_receivers()
+
+    def broken(self):
+        raise RuntimeError("start failed")
+
+    monkeypatch.setattr(controller_module.HamQController, "start", broken)
+    plugin = hamq.classFactory(iface)
+    with pytest.raises(RuntimeError, match="start failed"):
+        plugin.initGui()
+    process_events()
+    assert "hamq" not in provider_ids()
+    assert plugin.toolbar is None
+    assert plugin.controller is None
+    assert hamq_menu(iface.mainWindow()) is None
+    assert iface.mainWindow().findChild(QDockWidget, "HamQDock") is None
+    assert all_receivers() == before
+
+
+def test_controller_failure_leaves_nothing_behind(iface, process_events, monkeypatch):
+    iface.mapCanvas()
+    process_events()
+    before = all_receivers()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("no panel")
+
+    monkeypatch.setattr(controller_module, "HamQDock", broken)
+    plugin = hamq.classFactory(iface)
+    with pytest.raises(RuntimeError, match="no panel"):
+        plugin.initGui()
+    process_events()
+    assert "hamq" not in provider_ids()
+    assert all_receivers() == before
+
+
+def test_language_button_and_menu_switch_the_plugin(loaded):
+    from hamq.core.i18n import current_language
+
+    loaded.language_button.click()  # EN -> the last Serbian script (Latin by default)
+    assert current_language() == "sr_Latn"
+    assert loaded.import_action.text() == "Uvezi ADIF..."
+    assert loaded.language_button.text() == "SR"
+    loaded.language_menu.action_for("sr_Cyrl").trigger()
+    assert loaded.import_action.text() == "Увези ADIF..."
+    assert loaded.about_action.text() == "О програму HamQ"
+    assert loaded.language_button.text() == "СР"
+    loaded.language_menu.action_for("en").trigger()
+    assert current_language() == "en"
+    assert loaded.import_action.text() == "Import ADIF..."

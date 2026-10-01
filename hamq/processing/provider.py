@@ -4,6 +4,9 @@ Algorithms are registered by adding their classes to :data:`ALGORITHMS`; the
 provider creates one instance of each in :meth:`HamQProvider.loadAlgorithms`.
 After a language change the plugin calls ``provider.refreshAlgorithms()`` so the
 toolbox shows the translated names.
+
+Algorithms (group ``maidenhead``): ``hamq:locator_to_point``, ``hamq:maidenhead_grid``;
+(group ``log``): ``hamq:import_adif``, ``hamq:recalculate``.
 """
 
 from __future__ import annotations
@@ -13,12 +16,21 @@ from qgis.PyQt.QtGui import QIcon
 
 from ..core.i18n import tr
 from ..gui import icon_path
+from .alg_grid import MaidenheadGridAlgorithm
+from .alg_import_adif import ImportAdifAlgorithm
+from .alg_locator_to_point import LocatorToPointAlgorithm
+from .alg_recalculate import RecalculateAlgorithm
 
 PROVIDER_ID = "hamq"
 PROVIDER_ICON = "hamq.svg"
 
 #: Algorithm classes of the provider, in toolbox order.
-ALGORITHMS: list[type[QgsProcessingAlgorithm]] = []
+ALGORITHMS: list[type[QgsProcessingAlgorithm]] = [
+    LocatorToPointAlgorithm,
+    MaidenheadGridAlgorithm,
+    ImportAdifAlgorithm,
+    RecalculateAlgorithm,
+]
 
 
 class HamQProvider(QgsProcessingProvider):

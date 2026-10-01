@@ -1,0 +1,11 @@
+{
+  "Creates a point at the center of the cell of each Maidenhead locator. Enter one or more locators with 2, 4, 6 or 8 characters (e.g. KN04ft), separated by spaces, commas, semicolons or new lines. A 10-character locator is cut to 8 characters. Invalid locators are reported and skipped. The points are in EPSG:4326, with the fields {fields}.": "Pravi tačku u centru ćelije svakog Maidenhead lokatora. Unesite jedan ili više lokatora od 2, 4, 6 ili 8 znakova (npr. KN04ft), odvojenih razmacima, zarezima, tačkama sa zarezom ili novim redovima. Lokator od 10 znakova skraćuje se na 8 znakova. Neispravni lokatori se prijavljuju i preskaču. Tačke su u EPSG:4326, sa poljima {fields}.",
+  "Locator points": "Tačke lokatora",
+  "Locator to point": "Lokator u tačku",
+  "Locator {text} was cut to 8 characters: {locator}": "Lokator {text} je skraćen na 8 znakova: {locator}",
+  "Maidenhead locators": "Maidenhead lokatori",
+  "Maidenhead, locator, QTH, point, ham radio": "Maidenhead, lokator, QTH, tačka, radio-amater",
+  "No valid Maidenhead locator was given (2, 4, 6 or 8 characters, e.g. KN04ft)": "Nije zadat nijedan ispravan Maidenhead lokator (2, 4, 6 ili 8 znakova, npr. KN04ft)",
+  "Points: {count}": "Broj tačaka: {count}",
+  "{text} is not a valid Maidenhead locator, skipped": "{text} nije ispravan Maidenhead lokator, preskočen je"
+}

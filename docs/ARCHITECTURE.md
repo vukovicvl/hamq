@@ -32,6 +32,7 @@ hamq/
     styles.py            default styles (color by band)
   processing/
     provider.py          HamQProvider (id "hamq")
+    common.py            HamQAlgorithm base class, group ids 'maidenhead'/'log', shared helpers
     alg_locator_to_point.py alg_grid.py alg_import_adif.py alg_recalculate.py
   gui/
     dock.py settings_dialog.py locator_search.py azimuthal.py language.py
@@ -665,3 +666,34 @@ Additive changes accepted after M0/M7 review (2026-09-30). They are part of the 
   return the default for invalid stored values.
 - `core/hamlib.py`: `parse_mode` returns canonical `MODES` names; `cmd_set_mode` accepts
   passband `-1` (keep the current passband); builders raise `TypeError` for non-numbers.
+
+Additive changes accepted after the QGIS layer was built (2026-10-01):
+
+- **GeoPackage write rule:** every write to the QSO log goes through `gpkg.insert_qsos` /
+  `gpkg.recalculate`, which write with plain SQLite on their own connection (one
+  `BEGIN IMMEDIATE` transaction per chunk). Never write the log through QGIS layers or data
+  providers from a worker thread: on QGIS 4.2 that deadlocked or crashed in stress tests
+  while the main thread saved an edit session of the same file. Worker-thread callers emit
+  `events().dataChanged(path)` from the main thread (e.g. `postProcessAlgorithm`).
+- `qgis_io/gpkg.py`: `GpkgError`, `SCHEMA_VERSION = 1`, `META_TABLE = "hamq_meta"`,
+  `PATH_STEP_KM`; `InsertResult` also has `paths` and `canceled`;
+  `existing_dedup_keys(path, keys=None)`; `recalculate(..., *, force_station=False)` (origin:
+  MY_LAT/MY_LON from `adif_extra`, else a valid stored `my_gridsquare`, else `station.grid`).
+- `qgis_io/layers.py`: `GROUP_NAME`, `LAYER_NAMES`, `FIELD_ALIASES`, `matching_layers(path)`,
+  `retranslate_layers()`, `connect_events() -> disconnect` (register with `plugin.add_cleanup`).
+- Grid layers: text field `locator` + `styles.apply_default_style(layer, "grid")`.
+- `processing`: `common.py` (`HamQAlgorithm`). Parameters / outputs —
+  `locator_to_point`: LOCATORS -> OUTPUT; `maidenhead_grid`: EXTENT, LEVEL -> OUTPUT;
+  `import_adif`: INPUT, GPKG (file destination, default `settings.gpkg_path`), MY_GRID,
+  USE_CTY, LOAD_LAYERS (default True) -> IMPORTED, DUPLICATES, SKIPPED, GPKG;
+  `recalculate`: GPKG, MY_GRID, USE_CTY, FORCE_STATION -> UPDATED, GPKG.
+- `controller.py`: `HamQController(QObject)` with signals `listeningChanged(bool)`,
+  `pointOnMapChanged(bool)`, `statsChanged(object)`; methods `start`, `cleanup`, `gpkg_path`,
+  `ensure_storage`, `load_layers`, `refresh` (hidden, cancellable `QgsTask`), `refresh_now`,
+  `set_listening`, `handle_logged_adif`, `log_qso`, `save_records(records, source)`,
+  `set_rig`, `turn_rotator`, `stop_rotator`, `set_point_on_map`, `show_settings`,
+  `download_cty`, `open_algorithm_dialog`, `import_adif`. The GeoPackage is created lazily
+  (first import, live or manual QSO), not at plugin start.
+- `compat`: `TASK_CANCEL_WITHOUT_PROMPT`, `TASK_HIDDEN`, `TASK_SILENT`.
+- `qso.source` also takes `"manual"` (manual QSO dialog).
+

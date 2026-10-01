@@ -148,6 +148,10 @@ EXPECTED = {
     "STYLE_CATEGORY_SYMBOLOGY": ({2}, {"StyleCategory"}),  # M3-02
     "STYLE_CATEGORY_LABELING": ({8}, {"StyleCategory"}),  # M3-02
     "BRUSH_NONE": ({0}, {"BrushStyle"}),  # M3-02
+    "DATE_FORMAT_ISO_MS": ({9}, {"DateFormat"}),  # M2-03
+    "TASK_CANCEL_WITHOUT_PROMPT": ({4}, {"Flag"}),  # INT-01
+    "TASK_HIDDEN": ({8}, {"Flag"}),  # INT-01
+    "TASK_SILENT": ({16}, {"Flag"}),  # INT-01
     "NET_ATTR_HTTP_STATUS": ({0}, {"Attribute"}),
     "NET_ATTR_REDIRECT_POLICY": ({22, 25}, {"Attribute"}),
     "NET_REDIRECT_NO_LESS_SAFE": ({1}, {"RedirectPolicy"}),
@@ -689,3 +693,29 @@ def test_brush_none(qgis_app):
 
     symbol = QgsFillSymbol.createSimple({"style": "no"})
     assert symbol.symbolLayer(0).brushStyle() == compat.BRUSH_NONE
+
+
+def test_date_format_iso_ms():
+    from datetime import datetime, timezone
+
+    from hamq.qgis_io.fields import to_qdatetime
+
+    value = to_qdatetime(datetime(2026, 9, 15, 18, 45, 7, 250000, tzinfo=timezone.utc))
+    # toUTC(): Qt 6 writes "+00:00" instead of "Z" for a QTimeZone::utc() time
+    assert value.toUTC().toString(compat.DATE_FORMAT_ISO_MS) == "2026-09-15T18:45:07.250Z"
+
+
+# --- INT-01: background statistics refresh ------------------------------------------------
+
+
+def test_task_flags_combine():
+    flags = (
+        compat.TASK_CAN_CANCEL
+        | compat.TASK_CANCEL_WITHOUT_PROMPT
+        | compat.TASK_HIDDEN
+        | compat.TASK_SILENT
+    )
+    task = _Task("test", flags)
+    assert task.canCancel()
+    for name in ("TASK_CANCEL_WITHOUT_PROMPT", "TASK_HIDDEN", "TASK_SILENT"):
+        assert task.flags() & getattr(compat, name)

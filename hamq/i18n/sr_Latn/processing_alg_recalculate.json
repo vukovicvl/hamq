@@ -1,0 +1,15 @@
+{
+  "All files ({pattern})": "Svi fajlovi ({pattern})",
+  "GeoPackage files ({pattern})": "GeoPackage fajlovi ({pattern})",
+  "GeoPackage with the QSO log": "GeoPackage sa logom veza",
+  "No GeoPackage file is set": "GeoPackage fajl nije zadat",
+  "Recalculate distances and DXCC data": "Ponovo izračunaj rastojanja i DXCC podatke",
+  "Recalculates distance, bearing and path of every QSO in the GeoPackage, for example after you set or changed your QTH locator or downloaded cty.dat. QSOs logged with their own QTH (MY_LAT/MY_LON or MY_GRIDSQUARE) keep it, unless my locator is to be used for every QSO. Missing DXCC data and positions are filled in from cty.dat; values from the log are kept.": "Ponovo izračunava rastojanje, azimut i putanju svake veze u GeoPackage fajlu, na primer kada ste uneli ili promenili svoj QTH lokator ili preuzeli cty.dat. Veze upisane sa sopstvenim QTH-om (MY_LAT/MY_LON ili MY_GRIDSQUARE) ga zadržavaju, osim ako je izabrano da se moj lokator koristi za sve veze. DXCC podaci i pozicije kojih nema dopunjuju se iz cty.dat; vrednosti iz loga se zadržavaju.",
+  "Recalculation canceled, nothing was changed": "Ponovno izračunavanje je otkazano, ništa nije promenjeno",
+  "The GeoPackage {path} does not exist": "GeoPackage fajl {path} ne postoji",
+  "The QSO layers are in edit mode. The recalculated values were saved in the GeoPackage; saving your edits may overwrite some of them.": "Slojevi veza su u režimu uređivanja. Ponovo izračunate vrednosti su sačuvane u GeoPackage fajlu; čuvanje vaših izmena može da prepiše neke od njih.",
+  "Updated QSOs": "Ažurirane veze",
+  "Updated QSOs: {count}": "Broj ažuriranih veza: {count}",
+  "Use my locator for every QSO, also for QSOs logged with another QTH": "Koristi moj lokator za sve veze, i za veze upisane sa drugog QTH-a",
+  "distance, bearing, path, DXCC, cty.dat, QTH, ham radio": "rastojanje, azimut, putanja, DXCC, cty.dat, QTH, radio-amater"
+}
