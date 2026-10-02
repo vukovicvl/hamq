@@ -24,9 +24,49 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e PYTHONDONTWRITEBYTECO
     python3 -m pytest -p no:cacheprovider tests/qgis -q'
 ```
 
-CI runs the same core, catalog and lint checks (core on Python 3.9 and 3.12) and
+### The plugins.qgis.org scan
+
+plugins.qgis.org scans every uploaded zip and blocks a version on a finding of an
+enabled rule. `scripts/qgis_repo_scan.py` runs the site's Bandit, detect-secrets,
+Flake8 and file checks with the site's commands, rules and tool versions on a zip it
+builds with `scripts/package.py` (or on `--zip PATH`). It fails on any finding; on top
+of the site it also fails on Flake8 E203 and E501 (line length 120, both disabled on the
+site today), any executable, hidden or binary file. Exit status 2 means that a tool is
+missing; the message names the pip command.
+
+```bash
+# the scan tools pinned like the site, in a throw-away container
+docker run --rm -v "$PWD":/app:ro -w /app -e PYTHONDONTWRITEBYTECODE=1 python:3.12-slim \
+  sh -c 'pip install -q --root-user-action=ignore "bandit~=1.9" "detect-secrets~=1.5" \
+           "flake8~=7.3" "flake8-json~=24.4" && python scripts/qgis_repo_scan.py'
+# or in a virtual environment with those tools installed
+python3 scripts/qgis_repo_scan.py --zip dist/hamq-x.y.z.zip
+
+# the site's Qt6 check (image about 1 GB to download, 4 GB on disk)
+python3 scripts/package.py --output-dir /tmp/hamq-dist
+docker run --rm -v /tmp/hamq-dist:/dist:ro --entrypoint sh \
+  ghcr.io/qgis/pyqgis4-checker:main-ubuntu -c 'mkdir /tmp/x && cd /tmp/x &&
+    python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(\".\")" "/dist/$1" &&
+    exec /usr/local/bin/pyqt5_to_pyqt6.py /tmp/x --dry_run' sh hamq-x.y.z.zip
+```
+
+The Qt6 check passes on the site when `pyqt5_to_pyqt6.py --dry_run` exits 0, which it
+also does when it proposes changes; HamQ requires that it prints nothing after
+`=== dry_run mode | Start Logs ===` (a line such as `/tmp/x/hamq/x.py:3:4 - Enum error`
+is a proposed change). Fix a finding in the code; a `# nosec` comment is only for code
+that is safe, names its rule and says why (`# nosec B608 # <why it is safe>`; the reason
+goes after a second `#`, or Bandit reads its words as test ids and warns). Do not ship a
+`.bandit`, `.flake8` or `.secrets.baseline` file to tune the scan.
+
+The rule lists in `scripts/qgis_repo_scan.py` are those of the site on 2026-10-02
+(`qgis/QGIS-Plugins-Website`, `qgis-app/plugins/security_scanner.py` and
+`qgis-app/plugins/management/commands/data/*_rules.json`); check them there before a
+release and update the constants together with the CI versions.
+
+CI runs the same core, catalog and lint checks (core on Python 3.9 and 3.12),
 `tests/qgis` on QGIS 3.34 (`qgis/qgis:3.34`, the minimum version), 3.44, 4.0 and 4.2
-(`qgis/qgis:4.2-trixie`); all jobs must be green.
+(`qgis/qgis:4.2-trixie`), and the plugins.qgis.org scan with the Qt6 check on the zip
+(job *plugins.qgis.org scan*); all jobs must be green.
 
 ## 2. Version, changelog and metadata
 
@@ -41,6 +81,8 @@ CI runs the same core, catalog and lint checks (core on Python 3.9 and 3.12) and
      `x.y.z: ...`; the QGIS plugin manager and plugins.qgis.org show it;
    - `experimental=True` while the version is 0.x;
    - `qgisMinimumVersion=3.34`, `qgisMaximumVersion=4.99`;
+   - no `category`: the QGIS documentation allows only `Raster`, `Vector`, `Database`,
+     `Mesh` and `Web` (the menu the plugin is in), and HamQ is in *Plugins*, the default;
    - keep `supportsQt6=True`. plugins.qgis.org now marks the key as deprecated and shows a
      warning on upload (QGIS 4 support follows from `qgisMaximumVersion`). The warning is
      expected: QGIS 3.x builds on Qt6 mark a plugin without the key as incompatible, and
@@ -93,6 +135,13 @@ disabled and enabled again without errors in *View > Panels > Log Messages* (Ham
    through the upload page, a later version from the plugin's own page). Check that the
    page shows the version, the changelog and the experimental flag. A new plugin may
    wait for approval by the repository maintainers before it is listed.
+   - Upload from Monday to Thursday, so that the maintainers can approve the version and
+     problems can be answered before the weekend.
+   - The site sends a confirmation email to the `email` of `metadata.txt`; the link in it
+     must be clicked before the staff can approve the plugin.
+   - The site's scan must show no finding, and no security rule is skipped: a finding is
+     fixed in the code and released as a new version, never waved through. The
+     deprecation warning for `supportsQt6` is expected (see step 2).
 
 ## 6. After the release
 

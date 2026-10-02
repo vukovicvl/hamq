@@ -10,7 +10,7 @@ included, needs no extra Python packages, and speaks English, Srpski (latinica) 
 
 ![QGIS with a demo log from KN04ft: QSO paths coloured by band on the world map, the band legend in the Layers panel and the HamQ panel with the statistics](docs/images/qso-map.png)
 
-> **Status: 0.1.0, experimental.** The automated tests pass on QGIS 3.34, 3.40, 3.44,
+> **Status: 0.1.1, experimental.** The automated tests pass on QGIS 3.34, 3.40, 3.44,
 > 4.0 and 4.2. The WSJT-X protocol was checked with datagrams captured from a real
 > WSJT-X 2.7.0, and the radio and rotator part with the Hamlib 4.6 dummy devices, not
 > yet with real radios and rotators on the air. Please tell what works with your station
@@ -66,7 +66,7 @@ included, needs no extra Python packages, and speaks English, Srpski (latinica) 
 
 ### From the release zip
 
-1. Download `hamq-0.1.0.zip` from the
+1. Download `hamq-0.1.1.zip` from the
    [releases page](https://github.com/vukovicvl/hamq/releases).
 2. In QGIS: *Plugins > Manage and Install Plugins > Install from ZIP*, choose the file
    and click *Install Plugin*. QGIS asks you to confirm a plugin from outside its
@@ -399,7 +399,7 @@ radiom i rotatorom preko Hamlib-a. Radi u QGIS-u 3.34 i novijem, uključujući Q
 ne traži dodatne Python pakete, a interfejs je na engleskom i srpskom, latinicom ili
 ćirilicom.
 
-> **Stanje: 0.1.0, eksperimentalno.** Automatski testovi prolaze na QGIS-u 3.34, 3.40,
+> **Stanje: 0.1.1, eksperimentalno.** Automatski testovi prolaze na QGIS-u 3.34, 3.40,
 > 3.44, 4.0 i 4.2. WSJT-X protokol je proveren paketima snimljenim iz pravog WSJT-X-a
 > 2.7.0, a deo za radio i rotator sa Hamlib 4.6 probnim (dummy) uređajima, još ne sa
 > pravim radijima i rotatorima u etru. Javite šta radi sa vašom stanicom, a šta ne, na
@@ -447,7 +447,7 @@ Slike ekrana su gore, uz englesko uputstvo: statistika latinicom, kartice WSJT-X
 
 ### Instalacija
 
-**Iz zip fajla izdanja:** preuzmite `hamq-0.1.0.zip` sa
+**Iz zip fajla izdanja:** preuzmite `hamq-0.1.1.zip` sa
 [stranice izdanja](https://github.com/vukovicvl/hamq/releases), pa u QGIS-u izaberite
 *Plugins > Manage and Install Plugins > Install from ZIP*, izaberite fajl i kliknite
 *Install Plugin* (QGIS traži potvrdu za dodatak van svog repozitorijuma). Pojavljuju se

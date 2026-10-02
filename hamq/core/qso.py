@@ -30,7 +30,8 @@ Rules (docs/ARCHITECTURE.md, "core/qso.py"):
   warning.
 - My position, the start of distance, bearing and path: ``MY_LAT`` / ``MY_LON`` >
   centre of ``MY_GRIDSQUARE`` > centre of the station locator > none.
-  ``my_gridsquare`` is the record's ``MY_GRIDSQUARE``, else the station locator. A
+  ``my_gridsquare`` is the record's ``MY_GRIDSQUARE``, else the 6-character locator of
+  ``MY_LAT`` / ``MY_LON`` (the cell the path starts in), else the station locator. A
   ``MY_GRIDSQUARE`` that is a coarser version of the station locator (``KN04`` with
   ``KN04ft`` in the settings, as WSJT-X writes its "My Grid") names the same place less
   precisely: without ``MY_LAT`` / ``MY_LON``, the station locator is used for both. A
@@ -93,6 +94,7 @@ __all__ = [
     "Qso",
     "Station",
     "display_mode",
+    "my_position",
     "record_to_qso",
     "records_to_qsos",
 ]
@@ -161,6 +163,7 @@ _CONTINENTS = frozenset(("EU", "AS", "AF", "NA", "SA", "OC", "AN"))
 _DIGITS = re.compile(r"[0-9]{1,6}")  # ASCII digits only: int() would also take '２' or '2_9'
 _MAX_WARNINGS = 100  # per log, like the ADIF parser; summaries come on top
 _SHOWN_LENGTH = 40  # longest value quoted in a warning
+_MY_LOCATOR_LENGTH = maidenhead.LEVEL_SUBSQUARE  # my_gridsquare made from MY_LAT / MY_LON
 
 
 @dataclass
@@ -248,6 +251,15 @@ def record_to_qso(
     context = _Context(station, cty, source)
     qso, warnings = _convert(record, context, None)
     return qso, context.warnings + warnings
+
+
+def my_position(record: Mapping[str, str]) -> tuple[float, float] | None:
+    """``(lat, lon)`` of the record's ``MY_LAT`` / ``MY_LON`` when :func:`record_to_qso`
+    starts the path there: both present and valid, not ``0/0``. ``None`` otherwise, also
+    for anything that is not a mapping. Field names may be in any case; no warnings.
+    """
+    fields = _fields(record)
+    return _position(fields.get("MY_LAT"), fields.get("MY_LON"), "MY_LAT", "MY_LON", _quiet)
 
 
 def records_to_qsos(
@@ -371,7 +383,10 @@ def _convert(record: object, context: _Context, index: int | None) -> tuple[Qso 
         # A coarser version of my own locator (WSJT-X "My Grid" KN04, settings KN04ft):
         # the same place, known more precisely from the settings.
         my_gridsquare = my_grid = station_grid
-    if my_gridsquare is None:
+    if my_gridsquare is None and my_position is not None:
+        # the cell the path starts in, so the column never names another QTH than the origin
+        my_gridsquare = maidenhead.to_locator(my_position[0], my_position[1], _MY_LOCATOR_LENGTH)
+    elif my_gridsquare is None:
         my_gridsquare = station_grid
 
     dxcc = _number(get("DXCC"), "DXCC", 0, 999, warn)
@@ -417,7 +432,8 @@ def _convert(record: object, context: _Context, index: int | None) -> tuple[Qso 
         (lat, lon), loc_source = maidenhead.to_latlon(field), _LOC_GRID
         warn(
             tr(
-                "{record}: locator {value} in GRIDSQUARE is only a Maidenhead field (20° x 10°), the QSO is placed at its center"
+                "{record}: locator {value} in GRIDSQUARE is only a Maidenhead field "
+                "(20° x 10°), the QSO is placed at its center"
             ),
             value=field,
         )
@@ -439,13 +455,15 @@ def _convert(record: object, context: _Context, index: int | None) -> tuple[Qso 
         if lat is None:
             warn(
                 tr(
-                    "{record}: no position (no LAT/LON, valid locator or cty.dat entity), the QSO is not shown on the map"
+                    "{record}: no position (no LAT/LON, valid locator or cty.dat entity), "
+                    "the QSO is not shown on the map"
                 )
             )
         if my_lat is None:
             warn(
                 tr(
-                    "{record}: my QTH unknown (no MY_LAT/MY_LON, MY_GRIDSQUARE or locator in the HamQ settings), no distance and bearing"
+                    "{record}: my QTH unknown (no MY_LAT/MY_LON, MY_GRIDSQUARE or locator in "
+                    "the HamQ settings), no distance and bearing"
                 )
             )
 
@@ -504,6 +522,10 @@ def _fields(record: object) -> dict[str, str]:
 
 
 _Warn = Callable[..., None]
+
+
+def _quiet(template: str, **values: object) -> None:
+    """A ``warn`` that drops the warning (:func:`my_position`)."""
 
 
 def _band(

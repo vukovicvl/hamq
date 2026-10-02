@@ -702,6 +702,53 @@ def test_import_positions_and_distances_from_cty_and_my_locator(tmp_gpkg, cty_ca
     assert all(row["distance_km"] is not None for row in rows.values() if row["loc_source"])
 
 
+def test_import_my_lat_lon_give_my_gridsquare_without_the_station_mark(tmp_path, tmp_gpkg, no_cty):
+    """REL-01: a record with MY_LAT/MY_LON and no MY_GRIDSQUARE got my locator (KN04ft)
+    with the STATION_GRID_KEY mark while its path started at MY_LAT/MY_LON, and a later
+    Recalculate rewrote the column but not the origin. Now it gets the cell of MY_LAT /
+    MY_LON (Novi Sad, JN95wg) and no mark; a record without them still gets both."""
+
+    def field(name: str, value: str) -> str:
+        return f"<{name}:{len(value)}>{value}"
+
+    common = field("QSO_DATE", "20260915") + field("BAND", "20m") + field("MODE", "FT8")
+    portable = field("MY_LAT", "N045 16.250") + field("MY_LON", "E019 52.500")
+    adi = tmp_path / "portable.adi"
+    adi.write_text(
+        "HamQ test\n<EOH>\n"
+        + field("CALL", "PORTABLE")
+        + field("TIME_ON", "1845")
+        + common
+        + field("GRIDSQUARE", "JO62")
+        + portable
+        + "<EOR>\n"
+        + field("CALL", "HOME")
+        + field("TIME_ON", "1846")
+        + common
+        + field("GRIDSQUARE", "JO62")
+        + "<EOR>\n",
+        encoding="utf-8",
+    )
+    results, _ = run("hamq:import_adif", import_parameters(adi, tmp_gpkg, MY_GRID="KN04ft"))
+    assert results["IMPORTED"] == 2
+    rows = rows_by_call(tmp_gpkg)
+    portable_row, home = rows["PORTABLE"], rows["HOME"]
+    assert portable_row["my_gridsquare"] == "JN95wg"
+    assert gpkg.STATION_GRID_KEY not in json.loads(portable_row["adif_extra"])
+    assert home["my_gridsquare"] == "KN04ft"
+    assert json.loads(home["adif_extra"]) == {gpkg.STATION_GRID_KEY: "Y"}
+    target = maidenhead.to_latlon("JO62")
+    distance = geo.distance_km(*maidenhead.to_latlon("JN95wg"), *target)
+    assert portable_row["distance_km"] == pytest.approx(distance)
+
+    results, _ = run("hamq:recalculate", {"GPKG": tmp_gpkg, "MY_GRID": "JN05"})
+    assert results["UPDATED"] == 1  # HOME follows my locator, PORTABLE keeps its own QTH
+    rows = rows_by_call(tmp_gpkg)
+    assert rows["PORTABLE"]["my_gridsquare"] == "JN95wg"
+    assert rows["PORTABLE"]["distance_km"] == pytest.approx(distance)
+    assert rows["HOME"]["my_gridsquare"] == "JN05"
+
+
 def test_import_without_my_locator_has_no_distances(tmp_gpkg, cty_calls):
     _, feedback = run(
         "hamq:import_adif", import_parameters(ADIF / "n1mm.adi", tmp_gpkg, MY_GRID="")

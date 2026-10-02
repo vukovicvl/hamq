@@ -29,7 +29,7 @@ from qgis.core import (
 
 from hamq.core import geo, maidenhead
 from hamq.core.cty import CtyDatabase
-from hamq.core.qso import PATH_FIELDS, QSO_FIELDS, Station, records_to_qsos
+from hamq.core.qso import PATH_FIELDS, QSO_FIELDS, Station, my_position, records_to_qsos
 from hamq.qgis_io import compat, gpkg, layers
 from hamq.qgis_io.fields import FIELD_KINDS, make_fields
 
@@ -1296,14 +1296,12 @@ def test_recalculate_with_a_new_station(tmp_gpkg):
 def test_recalculate_moves_qsos_that_got_my_locator_at_the_import(tmp_gpkg):
     """An import gives QSOs without a QTH of their own my locator as ``my_gridsquare`` and
     marks them in ``adif_extra``: they follow a new locator. QSOs logged with
-    MY_GRIDSQUARE keep theirs; MY_LAT/MY_LON stay the origin."""
+    MY_GRIDSQUARE keep theirs (MY_LAT/MY_LON: see the next test)."""
     mark = {gpkg.STATION_GRID_KEY: "Y"}
-    my_position = {f"MY_{key}": value for key, value in adif_coordinates(*BEOGRAD).items()}
     qsos = make_qsos(
         [
             record("FILLED", 1, GRIDSQUARE="JO62", **mark),
             record("LOGGED", 2, GRIDSQUARE="JO62", MY_GRIDSQUARE="KN04ft"),
-            record("MYPOS", 3, GRIDSQUARE="JO62", **mark, **my_position),
         ]
     )
     gpkg.insert_qsos(tmp_gpkg, qsos)
@@ -1311,9 +1309,9 @@ def test_recalculate_moves_qsos_that_got_my_locator_at_the_import(tmp_gpkg):
     assert {row["my_gridsquare"] for row in before} == {"KN04ft"}
     assert json.loads(before[0]["adif_extra"]) == mark
 
-    assert gpkg.recalculate(tmp_gpkg, Station("YU1XX", "jn95WG")) == 2
-    filled, logged, mypos = gpkg.read_qso_rows(tmp_gpkg)
-    assert filled["my_gridsquare"] == mypos["my_gridsquare"] == "JN95wg"
+    assert gpkg.recalculate(tmp_gpkg, Station("YU1XX", "jn95WG")) == 1
+    filled, logged = gpkg.read_qso_rows(tmp_gpkg)
+    assert filled["my_gridsquare"] == "JN95wg"
     assert filled["distance_km"] == pytest.approx(
         geo.distance_km(*maidenhead.to_latlon("JN95wg"), *maidenhead.to_latlon("JO62"))
     )
@@ -1324,14 +1322,122 @@ def test_recalculate_moves_qsos_that_got_my_locator_at_the_import(tmp_gpkg):
     assert parts[0][0] == pytest.approx(tuple(reversed(maidenhead.to_latlon("JN95wg"))))
     assert logged["my_gridsquare"] == "KN04ft"
     assert logged["distance_km"] == pytest.approx(before[1]["distance_km"])
-    assert mypos["distance_km"] == pytest.approx(before[2]["distance_km"])  # MY_LAT/MY_LON
 
     assert gpkg.recalculate(tmp_gpkg, Station()) == 0  # no locator: the QSOs keep the last
     assert gpkg.read_qso_rows(tmp_gpkg)[0]["my_gridsquare"] == "JN95wg"
-    assert gpkg.recalculate(tmp_gpkg, STATION) == 2  # and follow the next one
-    filled, logged, _ = gpkg.read_qso_rows(tmp_gpkg)
+    assert gpkg.recalculate(tmp_gpkg, STATION) == 1  # and follow the next one
+    filled, logged = gpkg.read_qso_rows(tmp_gpkg)
     assert filled["distance_km"] == pytest.approx(before[0]["distance_km"])
     assert (filled["my_gridsquare"], logged["my_gridsquare"]) == ("KN04ft", "KN04ft")
+
+
+def test_recalculate_gives_qsos_with_my_lat_lon_the_locator_of_that_position(tmp_gpkg):
+    """REL-01: MY_LAT/MY_LON in Tokyo and no MY_GRIDSQUARE. HamQ 0.1.0 stored my locator
+    as ``my_gridsquare`` (with the STATION_GRID_KEY mark from Import ADIF; NULL without
+    a locator) while the path started in Tokyo, and Recalculate moved the column to a new
+    locator but not the path. Now the column is the cell of MY_LAT/MY_LON, as an import
+    stores it, and the mark goes."""
+    mark = {gpkg.STATION_GRID_KEY: "Y"}
+    tokyo = {f"MY_{key}": value for key, value in adif_coordinates(*TOKYO).items()}
+    origin = my_position(tokyo)
+    cell = maidenhead.to_locator(*origin, 6)
+    assert cell == "PM95uq"
+    marked, unmarked, fresh = make_qsos(
+        [
+            record("MARKED", 1, GRIDSQUARE="JO62", **mark, **tokyo),
+            record("NOGRID", 2, GRIDSQUARE="JO62", **tokyo),
+            record("FRESH", 3, GRIDSQUARE="JO62", **tokyo),
+        ]
+    )
+    assert (marked.my_gridsquare, fresh.my_gridsquare) == (cell, cell)  # core.qso, REL-01
+    old = [  # as HamQ 0.1.0 stored them
+        dataclasses.replace(marked, my_gridsquare="KN04ft"),
+        dataclasses.replace(unmarked, my_gridsquare=None),
+        fresh,
+    ]
+    gpkg.insert_qsos(tmp_gpkg, old)
+    before = gpkg.read_qso_rows(tmp_gpkg)
+    target = maidenhead.to_latlon("JO62")
+    distance = geo.distance_km(*origin, *target)
+    assert [row["distance_km"] for row in before] == pytest.approx([distance] * 3)
+
+    assert gpkg.recalculate(tmp_gpkg, Station("YU1XX", "JN95wg")) == 2
+    rows = gpkg.read_qso_rows(tmp_gpkg)
+    assert [row["my_gridsquare"] for row in rows] == [cell] * 3
+    assert json.loads(rows[0]["adif_extra"]) == tokyo  # without the mark
+    assert [row["distance_km"] for row in rows] == pytest.approx([distance] * 3)
+    links = path_links(tmp_gpkg)
+    for row in rows:
+        start = parts_of(links[row["fid"]].geometry())[0][0]
+        assert start == pytest.approx((origin[1], origin[0]))
+        assert maidenhead.to_locator(start[1], start[0], 6) == row["my_gridsquare"]
+
+    assert gpkg.recalculate(tmp_gpkg, STATION) == 0  # another locator changes nothing
+    assert [row["my_gridsquare"] for row in gpkg.read_qso_rows(tmp_gpkg)] == [cell] * 3
+
+
+def test_recalculate_lets_a_field_locator_yield_to_cty_inside_it(tmp_gpkg, cty):
+    """REL-01: as on import, a 2-character GRIDSQUARE (a 20 x 10 degree field) yields to the
+    cty.dat position inside it. Recalculate kept the centre of the field: grid ranked above
+    cty."""
+    qsos = make_qsos(  # imported without cty.dat: the centres of the locators
+        [
+            record("DL1ABC", 1, GRIDSQUARE="JO"),  # Germany (51, 10) lies in JO
+            record("W1XYZ", 2, GRIDSQUARE="FN"),  # the USA position (37.6, -91.87) does not
+            record("DL2ABC", 3, GRIDSQUARE="JO62"),  # a square: more precise than cty.dat
+        ]
+    )
+    gpkg.insert_qsos(tmp_gpkg, qsos)
+    assert {row["loc_source"] for row in gpkg.read_qso_rows(tmp_gpkg)} == {"grid"}
+
+    assert gpkg.recalculate(tmp_gpkg, STATION, cty) == 3
+    field, outside, square = gpkg.read_qso_rows(tmp_gpkg)
+    points = [feature.geometry().asPoint() for feature in features(tmp_gpkg, "qso")]
+    imported = make_qsos([record("DL1ABC", 1, GRIDSQUARE="JO")], cty=cty)[0]
+    assert (imported.lat, imported.lon, imported.loc_source) == (51.0, 10.0, "cty")
+    assert field["loc_source"] == "cty"
+    assert (points[0].y(), points[0].x()) == pytest.approx((51.0, 10.0))
+    assert field["distance_km"] == pytest.approx(imported.distance_km)
+    assert outside["loc_source"] == square["loc_source"] == "grid"
+    assert (points[1].y(), points[1].x()) == pytest.approx(maidenhead.to_latlon("FN"))
+    assert (points[2].y(), points[2].x()) == pytest.approx(maidenhead.to_latlon("JO62"))
+    parts = parts_of(path_links(tmp_gpkg)[field["fid"]].geometry())
+    assert parts[-1][-1] == pytest.approx((10.0, 51.0))
+
+    assert gpkg.recalculate(tmp_gpkg, STATION, cty) == 0
+
+
+def test_recalculate_keeps_a_field_point_moved_by_hand_inside_the_field(tmp_gpkg, cty):
+    """REL-01 review: only the centre the import wrote yields to cty.dat; a point moved by
+    hand inside the field stays, and a point outside a changed field is replaced."""
+    qsos = make_qsos(  # imported without cty.dat: the centres of the fields
+        [
+            record("DL1ABC", 1, GRIDSQUARE="JO"),
+            record("DL2ABC", 2, GRIDSQUARE="JN"),
+        ]
+    )
+    gpkg.insert_qsos(tmp_gpkg, qsos)
+    edited = layer(tmp_gpkg, "qso")
+    provider = edited.dataProvider()
+    fields = provider.fields()
+    assert provider.changeGeometryValues(
+        {1: QgsGeometry.fromPointXY(QgsPointXY(13.4, 52.5))}  # moved inside JO
+    )
+    assert provider.changeAttributeValues({2: {fields.lookupField("gridsquare"): "JO"}})
+    del provider, edited
+
+    gpkg.recalculate(tmp_gpkg, STATION, cty)
+    moved, changed = gpkg.read_qso_rows(tmp_gpkg)
+    points = [feature.geometry().asPoint() for feature in features(tmp_gpkg, "qso")]
+    assert moved["loc_source"] == "grid"
+    assert (points[0].y(), points[0].x()) == pytest.approx((52.5, 13.4))
+    assert moved["distance_km"] == pytest.approx(
+        geo.distance_km(*maidenhead.to_latlon("KN04ft"), 52.5, 13.4)
+    )
+    assert changed["loc_source"] == "cty"  # the centre of JN lies outside JO
+    assert (points[1].y(), points[1].x()) == pytest.approx((51.0, 10.0))
+
+    assert gpkg.recalculate(tmp_gpkg, STATION, cty) == 0
 
 
 def test_recalculate_keeps_my_gridsquare_and_the_origin_together(tmp_gpkg):

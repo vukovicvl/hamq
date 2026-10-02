@@ -131,7 +131,8 @@ def _decode(data: object) -> tuple[str, bool]:
     # bytes as they are; other bytes-like objects copied; TypeError for an int, a list, ...
     raw = data if isinstance(data, bytes) else memoryview(data).tobytes()
     if raw.startswith(_UTF8_BOM):
-        raw = raw[len(_UTF8_BOM) :]
+        bom_length = len(_UTF8_BOM)
+        raw = raw[bom_length:]
     elif raw.startswith(_UTF16_BOMS):
         return raw.decode("utf-16", "replace"), False
     try:
@@ -323,7 +324,8 @@ class _Parser:
         clean alternative reading: whole characters, no swallowed tag, followed by a tag.
         The reading must end by ``limit`` (default ``end``). Text that only looks like a
         tag with a user-defined name (``<Hvala lepo:3>``) is data inside the reading."""
-        chunk = self.text[start : min(start + length, end if limit is None else limit)]
+        chunk_end = min(start + length, end if limit is None else limit)
+        chunk = self.text[start:chunk_end]
         data = chunk.encode("utf-8", "surrogatepass")
         if len(data) < length:
             return None
@@ -357,7 +359,8 @@ class _Parser:
         count = self._byte_reading(start, length, end)
         if count is not None:
             warn(_msg_bytes(index, name))
-            return text[start : start + count], start + count
+            byte_stop = start + count
+            return text[start:byte_stop], byte_stop
         if stop > end:
             warn(_msg_past_end(index, name))
             return text[start:end], end

@@ -6,6 +6,32 @@ All notable changes to HamQ are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-02
+
+### Changed
+
+- The plugin zip passes every check of the plugins.qgis.org automatic scan with no
+  findings, run with the site's tools and rules: Bandit with its 74 rules,
+  detect-secrets, Flake8 with its codes (and with E203 and E501 at 120 characters),
+  the file checks and the Qt6 check (`pyqt5_to_pyqt6.py`). The SQL statements of the GeoPackage storage were audited
+  (table and column names are quoted identifiers, values are bound parameters) and
+  marked for Bandit with the reason. `scripts/qgis_repo_scan.py` runs the same scan
+  on a plugin zip, and CI runs it on every push and pull request.
+- The plugin description (`about` in `metadata.txt`) says that WSJT-X, JTDX and
+  Hamlib are separate programs: the live QSOs need WSJT-X or JTDX running, the radio
+  and rotator features need Hamlib `rigctld` / `rotctld` running.
+- `metadata.txt` no longer sets `category=Plugins`, which is not one of the values
+  the QGIS documentation allows (Raster, Vector, Database, Mesh, Web); HamQ stays in
+  the *Plugins* menu.
+
+### Fixed
+
+- A QSO with MY_LAT/MY_LON and no MY_GRIDSQUARE gets the locator of that position
+  as `my_gridsquare`. It got the station's QTH locator, which *Recalculate
+  distances and DXCC data* then changed while the path stayed at MY_LAT/MY_LON.
+- *Recalculate distances and DXCC data* lets the position of a 2-character
+  locator yield to the cty.dat position inside that field, as the import does.
+
 ## [0.1.0] - 2026-10-01
 
 First release, experimental.
@@ -122,5 +148,6 @@ First release, experimental.
   one on 3.44 in 1.1 s), the language switch, the Hamlib dummy daemons, the cty.dat
   download, and unloading and loading the plugin again.
 
-[Unreleased]: https://github.com/vukovicvl/hamq/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/vukovicvl/hamq/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/vukovicvl/hamq/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/vukovicvl/hamq/releases/tag/v0.1.0

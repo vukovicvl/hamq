@@ -504,7 +504,8 @@ class DecimalSpinBox(QDoubleSpinBox):
         body = text.strip()
         prefix, suffix = self.prefix().strip(), self.suffix().strip()
         if prefix and body.startswith(prefix):
-            body = body[len(prefix) :]
+            prefix_length = len(prefix)
+            body = body[prefix_length:]
         if suffix and body.endswith(suffix):
             body = body[: -len(suffix)]
         return body.strip()
@@ -1456,7 +1457,8 @@ class HamQDock(QDockWidget):
         else:
             self._wsjtx_led.set_state("wait")
             text = tr("Listening on {address}:{port}, waiting for WSJT-X").format(
-                address=_host(self._listen_address or "0.0.0.0"), port=self._listen_port
+                address=_host(self._listen_address or compat.HOST_ANY_IPV4_TEXT),
+                port=self._listen_port,
             )
         self._wsjtx_state.setText(text)
         self._wsjtx_led.setToolTip(_tooltip(text))

@@ -15,6 +15,10 @@ Check the repository for release readiness, following `docs/RELEASING.md` (steps
 - `python3 scripts/package.py --release` builds `dist/hamq-x.y.z.zip` from committed
   sources: one top folder `hamq/`, no `__pycache__`, tests, hidden files or data files
   (`cty.dat`, `cty.csv`, `*.gpkg*`, `*.adi`).
+- plugins.qgis.org scan: `scripts/qgis_repo_scan.py` reports no finding on the zip
+  (Bandit, detect-secrets, Flake8 with E203/E501, file checks) and the Qt6 check
+  (`pyqt5_to_pyqt6.py --dry_run`, command in `docs/RELEASING.md`) exits 0 with no
+  proposed change; every `# nosec` names its rule and why the code is safe.
 - No `print(` in `hamq/`, no hardcoded paths, no debug flags.
 - README (English and the Serbian section): features, install steps and the screenshots
   in `docs/images/` match the release (each below 300 KB);

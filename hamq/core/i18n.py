@@ -505,7 +505,8 @@ def _split_ending(core: str) -> tuple[str, str, str] | None:
     index = max(core.rfind(hyphen) for hyphen in _HYPHENS)
     if index <= 0 or not _is_word_char(core[index - 1]):
         return None
-    ending = unicodedata.normalize("NFC", core[index + 1 :])
+    after = index + 1
+    ending = unicodedata.normalize("NFC", core[after:])
     if not _ENDING_RE.fullmatch(ending):
         return None
     stem = unicodedata.normalize("NFC", core[:index])

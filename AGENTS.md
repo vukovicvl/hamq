@@ -141,6 +141,9 @@ ln -sfn "$PWD/hamq" ~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/ha
 python3 scripts/package.py
 python3 scripts/package.py --release
 
+# plugins.qgis.org scan of a built zip (needs bandit~=1.9 detect-secrets~=1.5 flake8~=7.3 flake8-json~=24.4)
+python3 scripts/qgis_repo_scan.py        # --zip PATH scans a given zip; Docker command in docs/RELEASING.md
+
 # demo log and README screenshots (QGIS desktop, offscreen)
 python3 scripts/make_demo_log.py         # --check: is docs/demo/demo_log.adi up to date?
 python3 scripts/make_screenshots.py

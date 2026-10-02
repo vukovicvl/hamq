@@ -422,7 +422,9 @@ Rules for `record_to_qso`:
   position when that lies inside the field; otherwise the field centre is used, with a
   warning.
 - Path origin: record `MY_LAT`/`MY_LON` > record `MY_GRIDSQUARE` > `station.grid` > none.
-  `my_gridsquare` = record value or `station.grid`. Without `MY_LAT`/`MY_LON`, a
+  `my_gridsquare` = record value, else the 6-character locator of a usable
+  `MY_LAT`/`MY_LON` (`maidenhead.to_locator`, the cell the path starts in), else
+  `station.grid` (since 2026-10-02, see `## Contract changes`). Without `MY_LAT`/`MY_LON`, a
   `MY_GRIDSQUARE` that is a strict prefix of a valid `station.grid` (`KN04` for `KN04ft`,
   as WSJT-X writes "My Grid") names the same place less precisely: `station.grid` is used
   for the origin and stored as `my_gridsquare`. A finer locator or another cell
@@ -880,6 +882,45 @@ below were already used across modules, or were added by the release fixes:
   literally); controller and plugin log lines are escaped where
   `compat.LOG_PANEL_SHOWS_HTML`.
 
+Changes for release 0.1.1 and the plugins.qgis.org scan (REL-01, 2026-10-02):
+
+- **`my_gridsquare` from `MY_LAT`/`MY_LON`** (bug fix): `core/qso.py` gives a record with a
+  usable `MY_LAT`/`MY_LON` and no `MY_GRIDSQUARE` the 6-character locator of that position
+  as `my_gridsquare` (before: `station.grid`, while the path started at `MY_LAT`/`MY_LON`;
+  without a station locator: none). This applies to Import ADIF, live WSJT-X / JTDX QSOs,
+  manual QSOs and `controller.save_records`, which all go through `record_to_qso`. New
+  public helper `core.qso.my_position(record) -> tuple[float, float] | None` (the
+  `MY_LAT`/`MY_LON` position `record_to_qso` uses, without warnings; in `__all__`).
+  *Import ADIF* sets `gpkg.STATION_GRID_KEY` only when the record has neither
+  `MY_GRIDSQUARE` nor a usable `MY_LAT`/`MY_LON`. `gpkg.recalculate` without
+  `force_station` treats a QSO whose `adif_extra` has a usable `MY_LAT`/`MY_LON` and whose
+  `my_gridsquare` is empty or carries the mark (data written by 0.1.0) the same way: it
+  gets the locator of that position and the mark is removed from `adif_extra`; a later
+  Recalculate with another station locator leaves it alone. So for new QSOs and for rows
+  that 0.1.0 *Import ADIF* wrote, the column names the cell the path starts in. Rows where
+  it still does not: a record whose logged `MY_GRIDSQUARE` and `MY_LAT`/`MY_LON` disagree
+  (both kept as logged); a 0.1.0 row from a live, manual or `save_records` QSO with
+  `MY_LAT`/`MY_LON` (no mark, `my_gridsquare` = the station locator of that time: it
+  cannot be told from a logged `MY_GRIDSQUARE`); and a row with `MY_LAT`/`MY_LON` after a
+  Recalculate with `force_station` followed by a normal one (the column keeps the station
+  locator, the origin is `MY_LAT`/`MY_LON` again).
+- **Recalculate and 2-character locators** (bug fix): `gpkg.recalculate` replaces a stored
+  `grid` point of a 2-character `GRIDSQUARE` with the cty.dat position inside that field
+  (`loc_source` `cty`), the import rule of `core/qso.py`; before, `grid` always ranked
+  above `cty` there. Only the centre of the field (what the import wrote) or a point
+  outside the field (the locator was changed) is replaced; a point moved by hand inside
+  the field is kept.
+- `qgis_io/compat.py`: `HOST_ANY_IPV4_TEXT`, the text form of `HOST_ANY_IPV4`
+  (`QHostAddress(HOST_ANY_IPV4).toString()`, `"0.0.0.0"`, computed once by Qt).
+  `net/wsjtx_listener.py` compares a configured address with it and `gui/dock.py` shows
+  it; the plugin code no longer spells out the any-address (Bandit B104 of the site scan;
+  binding is unchanged: `QHostAddress(HOST_ANY_IPV4)`).
+- SQL in `qgis_io/gpkg.py` (Bandit B608 of the site scan): every identifier in a statement
+  is a module constant or goes through `_quote()` (names read from the file, such as the
+  `fid` and geometry columns); every value is a bound parameter. Each statement Bandit
+  reports carries `# nosec B608 # <reason>` on the line Bandit reports; there is no
+  `.bandit` file. Keep the rule for new statements.
+
 ## Skills and this contract
 
 The skills in `.github/skills/` are background knowledge, first written before the code.
@@ -906,3 +947,6 @@ with v0.1.0 on 2026-10-01; no differences are known since. Resolved then:
   suffixes and the KG4 rule.
 
 A deliberate difference introduced later is listed here until the skill is updated.
+REL-01 (2026-10-02) changed the `my_gridsquare` rule and dropped `category` from
+`metadata.txt`; the adif and pyqgis-plugin skills and `PLAN.md` were updated in the same
+release, so no differences are known.

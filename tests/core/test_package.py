@@ -115,6 +115,30 @@ def test_metadata_in_zip(built_zip):
     assert built_zip.name == f"hamq-{general['version']}.zip"
 
 
+def test_metadata_reads_like_plugins_qgis_org():
+    """The site reads metadata.txt with a default ConfigParser (interpolation on: a '%'
+    would break the upload); the texts it shows say what HamQ needs besides QGIS."""
+    parser = configparser.ConfigParser()
+    parser.read_string((REPO_ROOT / "hamq" / "metadata.txt").read_text(encoding="utf-8"))
+    general = dict(parser.items("general"))  # interpolates every value; keys in lower case
+    version = general["version"]
+    assert general["changelog"].startswith(f"{version}: ")
+    assert " 0.1.0: first experimental release." in general["changelog"]
+    about = general["about"]
+    assert "separate programs" in about
+    for name in ("WSJT-X", "JTDX", "rigctld", "rotctld", "cty.dat"):
+        assert name in about, name
+    # 'category' is optional; the QGIS documentation allows only these menus.
+    assert general.get("category", "Raster") in ("Raster", "Vector", "Database", "Mesh", "Web")
+    assert general["supportsqt6"] == "True"
+
+
+def test_version_is_the_newest_changelog_section():
+    versions = package.changelog_versions(REPO_ROOT / "CHANGELOG.md")
+    assert versions[0] == "Unreleased"
+    assert versions[1] == metadata_version()
+
+
 def test_repository_metadata_is_valid():
     metadata, problems = package.validate(REPO_ROOT)
     assert problems == []

@@ -62,6 +62,7 @@ from ..qgis_io.compat import (
     BIND_REUSE_ADDRESS_HINT,
     BIND_SHARE_ADDRESS,
     HOST_ANY_IPV4,
+    HOST_ANY_IPV4_TEXT,
     MSG_INFO,
     MSG_WARNING,
     NET_PROXY_NONE,
@@ -79,7 +80,7 @@ _LOG_TAG = "HamQ"
 _WSJTX_UDP_SETTINGS = "File > Settings > Reporting > UDP Server"
 _EXAMPLE_MULTICAST = "224.0.0.1"
 _UNICAST, _MULTICAST, _IPV6 = "unicast", "multicast", "ipv6"
-_ANY_ADDRESS = "0.0.0.0"
+_ANY_ADDRESS = HOST_ANY_IPV4_TEXT  # 0.0.0.0: compared and shown, never bound as text
 _LIMITED_BROADCAST = "255.255.255.255"
 
 

@@ -19,8 +19,8 @@ The log is one GeoPackage file (``HamQSettings.gpkg_path``) with three tables:
 
 QGIS (GDAL) creates the tables, so they are registered like any GeoPackage layer.
 ``adif_extra`` of a QSO that got my locator as ``my_gridsquare`` at the import (the record
-had no MY_GRIDSQUARE) holds :data:`STATION_GRID_KEY`; :func:`recalculate` moves such QSOs
-to a changed locator.
+had no MY_GRIDSQUARE and no usable MY_LAT/MY_LON) holds :data:`STATION_GRID_KEY`;
+:func:`recalculate` moves such QSOs to a changed locator.
 Datetimes are converted with ``fields.to_qdatetime`` and stored as UTC ISO 8601 text
 (``2026-09-15T18:45:00.000Z``), the form GDAL writes; :func:`read_qso_rows` returns
 aware UTC ``datetime`` objects.
@@ -96,7 +96,7 @@ from qgis.PyQt.QtCore import QCoreApplication, QDateTime, QThread
 from ..core import geo, maidenhead
 from ..core.i18n import tr
 from ..core.modes import display_mode
-from ..core.qso import PATH_FIELDS, QSO_FIELDS, Station, record_to_qso
+from ..core.qso import PATH_FIELDS, QSO_FIELDS, Station, my_position, record_to_qso
 from . import compat
 from .fields import from_qdatetime, make_fields, to_qdatetime
 
@@ -133,7 +133,8 @@ SCHEMA_VERSION = 2
 PATH_STEP_KM = 100.0
 #: ``adif_extra`` key (an ADIF application-defined field) with the value ``"Y"``: the QSO's
 #: ``my_gridsquare`` was not in the log but filled in from my locator at the import, so
-#: :func:`recalculate` moves the QSO to a changed locator (``Import ADIF`` sets it).
+#: :func:`recalculate` moves the QSO to a changed locator (``Import ADIF`` sets it when the
+#: record has neither MY_GRIDSQUARE nor a usable MY_LAT/MY_LON).
 STATION_GRID_KEY = "APP_HAMQ_STATION_GRID"
 
 _DEDUP_INDEX = "qso_dedup_key_idx"
@@ -162,6 +163,8 @@ _INT32_MIN, _INT32_MAX = -(2**31), 2**31 - 1
 _LOG_TAG = "HamQ"
 # Precision rank of a position source: a better source found later replaces the point.
 _SOURCE_RANK = {"latlon": 3, "grid": 2, "cty": 1}
+# Degrees within which a stored point is the centre an import wrote (about 1 cm).
+_SAME_POINT_DEG = 1e-7
 
 _logged_once: set[tuple[str, str]] = set()
 # Files where old duplicates prevented the UNIQUE index on dedup_key (tried once per session).
@@ -467,7 +470,8 @@ def _schema_complete(connection: sqlite3.Connection, path: str) -> bool:
     ):
         return False
     row = connection.execute(
-        f'SELECT "value" FROM "{META_TABLE}" WHERE "key" = ?', (_SCHEMA_KEY,)
+        f'SELECT "value" FROM "{META_TABLE}" WHERE "key" = ?',  # nosec B608 # constant name
+        (_SCHEMA_KEY,),
     ).fetchone()
     if row is not None and _version(row[0]) > SCHEMA_VERSION:
         _warn_newer(path, _version(row[0]))
@@ -542,10 +546,11 @@ def _ensure_path_trigger(connection: sqlite3.Connection) -> None:
     if _has_path_trigger(connection):
         return
     connection.execute(f"DROP TRIGGER IF EXISTS {_quote(_PATH_TRIGGER)}")  # on another table
+    key = _quote(_primary_key(connection, QSO_LAYER))  # a name read from the file
     connection.execute(
-        f"CREATE TRIGGER {_quote(_PATH_TRIGGER)} AFTER DELETE ON {_quote(QSO_LAYER)} BEGIN "
-        f'DELETE FROM {_quote(PATH_LAYER)} WHERE "qso_fid" = OLD.'
-        f"{_quote(_primary_key(connection, QSO_LAYER))}; END"
+        f"CREATE TRIGGER {_quote(_PATH_TRIGGER)} "  # nosec B608 # names quoted by _quote()
+        f"AFTER DELETE ON {_quote(QSO_LAYER)} BEGIN DELETE FROM {_quote(PATH_LAYER)} "
+        f'WHERE "qso_fid" = OLD.{key}; END'
     )
 
 
@@ -560,12 +565,13 @@ def _ensure_version(connection: sqlite3.Connection, path: str) -> None:
         f'CREATE UNIQUE INDEX IF NOT EXISTS "{_META_INDEX}" ON "{META_TABLE}" ("key")'
     )
     row = connection.execute(
-        f'SELECT "value" FROM "{META_TABLE}" WHERE "key" = ?', (_SCHEMA_KEY,)
+        f'SELECT "value" FROM "{META_TABLE}" WHERE "key" = ?',  # nosec B608 # constant name
+        (_SCHEMA_KEY,),
     ).fetchone()
     if row is None:  # a new file, or one whose version went missing: migrate from "unknown"
         _migrate(connection, 0)
         connection.execute(
-            f'INSERT INTO "{META_TABLE}" ("key", "value") VALUES (?, ?)',
+            f'INSERT INTO "{META_TABLE}" ("key", "value") VALUES (?, ?)',  # nosec B608 # constant name
             (_SCHEMA_KEY, str(SCHEMA_VERSION)),
         )
         return
@@ -576,7 +582,7 @@ def _ensure_version(connection: sqlite3.Connection, path: str) -> None:
     if found < SCHEMA_VERSION:
         _migrate(connection, found)
         connection.execute(
-            f'UPDATE "{META_TABLE}" SET "value" = ? WHERE "key" = ?',
+            f'UPDATE "{META_TABLE}" SET "value" = ? WHERE "key" = ?',  # nosec B608 # constant name
             (str(SCHEMA_VERSION), _SCHEMA_KEY),
         )
 
@@ -608,9 +614,10 @@ def _migrate(connection: sqlite3.Connection, version: int) -> None:
     existed are removed; a line without a QSO link (``qso_fid`` NULL, drawn by hand) stays.
     """
     if version < 2:
+        key = _quote(_primary_key(connection, QSO_LAYER))  # a name read from the file
         connection.execute(
-            f'DELETE FROM {_quote(PATH_LAYER)} WHERE "qso_fid" NOT IN '
-            f"(SELECT {_quote(_primary_key(connection, QSO_LAYER))} FROM {_quote(QSO_LAYER)})"
+            f'DELETE FROM {_quote(PATH_LAYER)} WHERE "qso_fid" NOT IN '  # nosec B608 # quoted names
+            f"(SELECT {key} FROM {_quote(QSO_LAYER)})"
         )
 
 
@@ -642,18 +649,20 @@ def _stored_keys(connection: sqlite3.Connection, keys: Iterable[str | None] | No
         return {
             str(key)
             for (key,) in connection.execute(
-                f'SELECT "dedup_key" FROM "{QSO_LAYER}" WHERE "dedup_key" IS NOT NULL'
+                f'SELECT "dedup_key" FROM "{QSO_LAYER}" WHERE "dedup_key" IS NOT NULL'  # nosec B608 # constant name
             )
         }
     wanted = sorted({key for key in keys if key is not None})
     found: set[str] = set()
     for start in range(0, len(wanted), _SQL_BATCH):
-        batch = wanted[start : start + _SQL_BATCH]
+        end = start + _SQL_BATCH
+        batch = wanted[start:end]
         marks = ", ".join("?" * len(batch))
         found.update(
             str(key)
             for (key,) in connection.execute(
-                f'SELECT "dedup_key" FROM "{QSO_LAYER}" WHERE "dedup_key" IN ({marks})', batch
+                f'SELECT "dedup_key" FROM "{QSO_LAYER}" WHERE "dedup_key" IN ({marks})',  # nosec B608 # bound values
+                batch,
             )
         )
     return found
@@ -684,7 +693,9 @@ def read_qso_rows(path: str) -> list[dict[str, object]]:
             present = [name for name in names if name in columns]
             select = ", ".join(_quote(columns[name]) for name in present)
             order = f" ORDER BY {_quote(key_column)}" if key_column else ""
-            cursor = connection.execute(f'SELECT {select} FROM "{QSO_LAYER}"{order}')
+            cursor = connection.execute(
+                f'SELECT {select} FROM "{QSO_LAYER}"{order}'  # nosec B608 # names quoted by _quote()
+            )
             rows = []
             for values in cursor:
                 row: dict[str, object] = dict.fromkeys(names)
@@ -753,8 +764,9 @@ def insert_qsos(
                 if _is_canceled(feedback):
                     result.canceled = True
                     break
-                writer.write_chunk(items[start : start + chunk_size])
-                _set_progress(feedback, 100.0 * min(total, start + chunk_size) / total)
+                end = start + chunk_size
+                writer.write_chunk(items[start:end])
+                _set_progress(feedback, 100.0 * min(total, end) / total)
     finally:  # also when a refused write ends the insert: show what was saved before it
         if main_thread and (result.inserted or result.paths):
             _refresh_project_layers(path)
@@ -1233,7 +1245,11 @@ def recalculate(
       on every recalculation (``my_gridsquare`` is not changed). A ``my_gridsquare`` that
       the import filled in from my locator (:data:`STATION_GRID_KEY` in ``adif_extra``) is
       not the QSO's own: such a QSO follows a valid ``station.grid`` too and gets it as
-      ``my_gridsquare`` (without a valid ``station.grid`` it keeps the one it has). With
+      ``my_gridsquare`` (without a valid ``station.grid`` it keeps the one it has). A QSO
+      whose ``MY_LAT`` / ``MY_LON`` give the origin while no logged locator names it
+      (``my_gridsquare`` empty, or filled in from my locator by an older import) gets the
+      6-character locator of that position as ``my_gridsquare``, and the
+      :data:`STATION_GRID_KEY` mark is removed, as a new import stores it. With
       ``force_station=True`` every QSO uses ``station.grid`` and gets it as
       ``my_gridsquare`` (I moved, or the log has a wrong locator); this is ignored, with
       a warning, when ``station.grid`` is not a valid locator.
@@ -1241,9 +1257,11 @@ def recalculate(
       ``cty`` (values in the file always win).
     - The other station's point: a QSO without a point gets one (``LAT`` / ``LON`` in
       ``adif_extra``, the locator, cty.dat). A point is replaced when a more precise
-      source is now known (a locator for a cty.dat point) or when its locator was changed
-      so that the point no longer lies in the locator's cell; otherwise it is kept, also
-      when it was moved by hand.
+      source is now known (a locator for a cty.dat point; the cty.dat position inside
+      the field of a 2-character locator for the centre of that field, as on import, but
+      not for a point moved by hand inside the field) or
+      when its locator was changed so that the point no longer lies in the locator's
+      cell; otherwise it is kept, also when it was moved by hand.
     - ``distance_km`` / ``bearing_deg`` from the origin to the point (``None`` when
       either is unknown); the paths of these QSOs are built again, and paths of QSOs that
       no longer exist are removed.
@@ -1363,7 +1381,8 @@ def _recalculate(
     changed = sorted(set(attribute_changes) | set(geometry_changes))
     written = 0
     for start in range(0, len(changed), _WRITE_CHUNK):
-        chunk = changed[start : start + _WRITE_CHUNK]
+        end = start + _WRITE_CHUNK
+        chunk = changed[start:end]
         try:
             with database.transaction() as connection:
                 for fid in chunk:
@@ -1380,9 +1399,7 @@ def _recalculate(
             if denied is not None:  # every other write would fail the same way
                 raise denied from exc
             warnings.add(tr("Recalculated values could not be saved: {error}").format(error=exc))
-        _set_progress(
-            feedback, 60.0 + 10.0 * min(len(changed), start + _WRITE_CHUNK) / max(1, len(changed))
-        )
+        _set_progress(feedback, 60.0 + 10.0 * min(len(changed), end) / max(1, len(changed)))
     _rebuild_paths(database, [row.fid for row in rows], path_names, paths, warnings, feedback)
     _set_progress(feedback, 100.0)
     return written
@@ -1402,7 +1419,7 @@ def _update_row(
         values.append(geometry)
     if assignments:
         connection.execute(
-            f"UPDATE {_quote(QSO_LAYER)} SET {', '.join(assignments)} "
+            f"UPDATE {_quote(QSO_LAYER)} SET {', '.join(assignments)} "  # nosec B608 # quoted names
             f"WHERE {_quote(database.qso.key)} = ?",
             [*values, fid],
         )
@@ -1423,13 +1440,16 @@ def _rebuild_paths(
     try:
         with database.transaction() as connection:
             for start in range(0, len(fids), _SQL_BATCH):
-                batch = fids[start : start + _SQL_BATCH]
+                end = start + _SQL_BATCH
+                batch = fids[start:end]
                 marks = ", ".join("?" * len(batch))
                 connection.execute(
-                    f"DELETE FROM {_quote(PATH_LAYER)} WHERE {qso_fid} IN ({marks})", batch
+                    f"DELETE FROM {_quote(PATH_LAYER)} WHERE {qso_fid} IN ({marks})",  # nosec B608 # quoted name
+                    batch,
                 )
             connection.execute(
-                f"DELETE FROM {_quote(PATH_LAYER)} WHERE {qso_fid} IS NULL OR {qso_fid} NOT IN "
+                f"DELETE FROM {_quote(PATH_LAYER)} "  # nosec B608 # names quoted by _quote()
+                f"WHERE {qso_fid} IS NULL OR {qso_fid} NOT IN "
                 f"(SELECT {_quote(database.qso.key)} FROM {_quote(QSO_LAYER)})"
             )
     except sqlite3.Error as exc:
@@ -1441,7 +1461,8 @@ def _rebuild_paths(
     sql = database.insert_sql(table, path_names)
     total = max(1, len(paths))
     for start in range(0, len(paths), _WRITE_CHUNK):
-        chunk = paths[start : start + _WRITE_CHUNK]
+        end = start + _WRITE_CHUNK
+        chunk = paths[start:end]
         try:
             with database.transaction() as connection:
                 connection.executemany(sql, [[*values, blob] for _, values, blob in chunk])
@@ -1451,7 +1472,7 @@ def _rebuild_paths(
                     qso=", ".join(str(fid) for fid, _, _ in chunk[:3]), error=exc
                 )
             )
-        _set_progress(feedback, 70.0 + 30.0 * min(total, start + _WRITE_CHUNK) / total)
+        _set_progress(feedback, 70.0 + 30.0 * min(total, end) / total)
 
 
 def _recalculated(
@@ -1468,12 +1489,16 @@ def _recalculated(
     call = values.get("call")
     call = call.strip() if isinstance(call, str) else ""
     extra = _json_object(values.get("adif_extra"))
-    # my_gridsquare filled in from my locator at the import: not the QSO's own QTH
-    follows_station = (
+    marked = str(extra.get(STATION_GRID_KEY) or "").strip().upper() == "Y"
+    # MY_LAT / MY_LON give the origin and no locator of the log names it (none stored, or
+    # my locator filled in by an older import): my_gridsquare becomes their cell, as on import
+    own_cell = (
         not force_station
-        and station_grid is not None
-        and str(extra.get(STATION_GRID_KEY) or "").strip().upper() == "Y"
+        and (marked or not str(values.get("my_gridsquare") or "").strip())
+        and my_position(extra) is not None
     )
+    # my_gridsquare filled in from my locator at the import: not the QSO's own QTH
+    follows_station = not force_station and not own_cell and station_grid is not None and marked
     # A minimal ADIF record: record_to_qso applies the import rules to it. Date and time
     # only have to be valid; they are not used.
     record = {"CALL": call or "UNKNOWN", "QSO_DATE": "20000101", "TIME_ON": "0000"}
@@ -1490,7 +1515,7 @@ def _recalculated(
         ("cq_zone", "CQZ"),
         ("itu_zone", "ITUZ"),
     ]
-    if not force_station and not follows_station:
+    if not force_station and not follows_station and not own_cell:
         columns.append(("my_gridsquare", "MY_GRIDSQUARE"))
     for name, key in columns:
         value = values.get(name)
@@ -1509,6 +1534,11 @@ def _recalculated(
     }
     if force_station or follows_station:
         new["my_gridsquare"] = station_grid
+    elif own_cell:
+        new["my_gridsquare"] = qso.my_gridsquare  # the cell of MY_LAT / MY_LON
+        if marked:  # the column is the QSO's own now, as after a new import
+            del extra[STATION_GRID_KEY]
+            new["adif_extra"] = json.dumps(extra, ensure_ascii=False, sort_keys=True)
     elif _valid_locator(values.get("my_gridsquare")) is not None:
         # The import rules may name the same QTH more precisely now (my locator refines a
         # coarser logged one): the column stays the locator the origin comes from.
@@ -1545,6 +1575,22 @@ def _replaces(row: _StoredQso, derived: tuple[float, float], source: str | None)
     new_rank = _SOURCE_RANK.get(source or "", 0)
     if new_rank > stored_rank:
         return True
+    if stored_source == "grid" and source == "cty":
+        # A 2-character GRIDSQUARE (a 20 x 10 degree field) yields to the cty.dat position
+        # inside it, as on import (record_to_qso gives "cty" only for a position inside it).
+        # A point moved by hand inside the field is kept: only the centre the import wrote,
+        # or a point outside the field (the locator was changed), is replaced.
+        locator = _valid_locator(row.values.get("gridsquare"))
+        if locator is None or len(locator) != maidenhead.LEVEL_FIELD:
+            return False
+        lat, lon = row.point
+        lat_min, lon_min, lat_max, lon_max = maidenhead.to_bounds(locator)
+        if not (lat_min <= lat <= lat_max and lon_min <= lon <= lon_max):
+            return True
+        centre_lat, centre_lon = maidenhead.to_latlon(locator)
+        return math.isclose(lat, centre_lat, abs_tol=_SAME_POINT_DEG) and math.isclose(
+            lon, centre_lon, abs_tol=_SAME_POINT_DEG
+        )
     if new_rank == stored_rank == _SOURCE_RANK["grid"]:
         locator = _valid_locator(row.values.get("gridsquare"))
         if locator is None:
@@ -1613,7 +1659,7 @@ class _Database:
         columns = [_quote(table.columns[name]) for name in names] + [_quote(table.geometry)]
         marks = ", ".join("?" * len(columns))
         name = QSO_LAYER if table is self.qso else PATH_LAYER
-        return f"INSERT INTO {_quote(name)} ({', '.join(columns)}) VALUES ({marks})"
+        return f"INSERT INTO {_quote(name)} ({', '.join(columns)}) VALUES ({marks})"  # nosec B608 # quoted names
 
     def read_qsos(self) -> list[_StoredQso]:
         """Every QSO with the columns ``recalculate`` uses and its point."""
@@ -1624,7 +1670,10 @@ class _Database:
             + [_quote(self.qso.geometry)]
         )
         rows = []
-        for record in self.connection.execute(f"SELECT {select} FROM {_quote(QSO_LAYER)}"):
+        cursor = self.connection.execute(
+            f"SELECT {select} FROM {_quote(QSO_LAYER)}"  # nosec B608 # names quoted by _quote()
+        )
+        for record in cursor:
             values = dict(zip(names, record[1:-1]))
             rows.append(_StoredQso(int(record[0]), values, _blob_point(record[-1])))
         return rows
@@ -1789,7 +1838,11 @@ def _columns(connection: sqlite3.Connection, table: str) -> dict[str, str]:
     }
 
 
+# SQL text: every identifier in a statement is a module constant or goes through _quote()
+# (names read from the file, such as the fid and geometry columns); every value is a bound
+# parameter. The B608 "nosec" marks of the statements name the case.
 def _quote(name: str) -> str:
+    """``name`` as an SQL identifier: in double quotes, embedded quotes doubled."""
     return '"' + name.replace('"', '""') + '"'
 
 

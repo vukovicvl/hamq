@@ -433,6 +433,9 @@ CURSOR_WAIT = _resolve("CURSOR_WAIT", (Qt, "CursorShape", "WaitCursor"))
 
 #: ``QHostAddress`` for binding on all IPv4 interfaces (``0.0.0.0``).
 HOST_ANY_IPV4 = _resolve("HOST_ANY_IPV4", (QHostAddress, "SpecialAddress", "AnyIPv4"))
+#: ``HOST_ANY_IPV4`` as text (``0.0.0.0``), the form a configured address is compared with
+#: and shown in; computed by Qt, so the code never spells the address out.
+HOST_ANY_IPV4_TEXT = "" if HOST_ANY_IPV4 is None else QHostAddress(HOST_ANY_IPV4).toString()
 #: ``QHostAddress`` for the IPv4 loopback (``127.0.0.1``).
 HOST_LOCALHOST = _resolve("HOST_LOCALHOST", (QHostAddress, "SpecialAddress", "LocalHost"))
 

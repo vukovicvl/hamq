@@ -15,6 +15,14 @@ concurrency:
 
 env:
   RUFF_VERSION: "0.16.9"
+  # The scan tools of plugins.qgis.org, pinned like the site
+  # (qgis/QGIS-Plugins-Website, dockerize/docker/REQUIREMENTS.txt, 2026-10-02).
+  BANDIT_VERSION: "~=1.9"
+  DETECT_SECRETS_VERSION: "~=1.5"
+  FLAKE8_VERSION: "~=7.3"
+  FLAKE8_JSON_VERSION: "~=24.4"
+  # The site's Qt6 check runs pyqt5_to_pyqt6.py from this image (it follows the tag).
+  QT6_CHECKER_IMAGE: "ghcr.io/qgis/pyqgis4-checker:main-ubuntu"
 
 jobs:
   lint:
@@ -111,3 +119,39 @@ jobs:
           name: hamq-plugin-zip
           path: dist/*.zip
           if-no-files-found: error
+
+  qgis-repo-scan:
+    name: plugins.qgis.org scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the site's scan tools
+        run: |
+          python -m pip install --disable-pip-version-check \
+            "bandit${BANDIT_VERSION}" "detect-secrets${DETECT_SECRETS_VERSION}" \
+            "flake8${FLAKE8_VERSION}" "flake8-json${FLAKE8_JSON_VERSION}"
+      - name: Build the plugin zip
+        run: python scripts/package.py --output-dir "$RUNNER_TEMP/dist"
+      # Any finding fails, as on the site: Bandit (its 74 rules), detect-secrets,
+      # Flake8 (its codes, plus E203 and E501) and the file checks.
+      - name: Bandit, detect-secrets, Flake8, file checks (scripts/qgis_repo_scan.py)
+        run: python scripts/qgis_repo_scan.py --zip "$RUNNER_TEMP"/dist/hamq-*.zip
+      # The site's Qt6 check passes when pyqt5_to_pyqt6.py --dry_run exits 0; it exits 0
+      # even when it proposes changes ("path:line:col - ..."), so HamQ fails on those too.
+      - name: Qt6 check (pyqt5_to_pyqt6.py --dry_run)
+        run: |
+          zip_name="$(basename "$RUNNER_TEMP"/dist/hamq-*.zip)"
+          status=0
+          docker run --rm -v "$RUNNER_TEMP/dist":/dist:ro --entrypoint sh "$QT6_CHECKER_IMAGE" \
+            -c 'mkdir /tmp/x && cd /tmp/x &&
+              python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(\".\")" "/dist/$1" &&
+              exec /usr/local/bin/pyqt5_to_pyqt6.py /tmp/x --dry_run' sh "$zip_name" \
+            > "$RUNNER_TEMP/qt6.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/qt6.log"
+          if [ "$status" -ne 0 ]; then echo "::error::pyqt5_to_pyqt6.py exited with $status"; exit 1; fi
+          if grep -q '^/tmp/x/' "$RUNNER_TEMP/qt6.log"; then
+            echo "::error::pyqt5_to_pyqt6.py proposes changes (see above)"; exit 1
+          fi

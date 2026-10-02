@@ -10,8 +10,10 @@ Steps (``processAlgorithm``, a worker thread when started from the toolbox):
 2. ``core.qso.records_to_qsos`` with my locator (``MY_GRID``, default: the HamQ
    settings), the cached cty.dat (``USE_CTY``) and ``source = "adif:<file name>"``.
    Each record is released as soon as its QSO is made. A record without MY_GRIDSQUARE
-   gets the mark ``gpkg.STATION_GRID_KEY`` when my locator is set: its QSO gets my
-   locator as ``my_gridsquare``, and ``Recalculate`` moves it to a changed locator;
+   and without a usable MY_LAT/MY_LON gets the mark ``gpkg.STATION_GRID_KEY`` when my
+   locator is set: its QSO gets my locator as ``my_gridsquare``, and ``Recalculate``
+   moves it to a changed locator (with MY_LAT/MY_LON the QSO gets the locator of that
+   position and no mark);
 3. ``qgis_io.gpkg.ensure_gpkg(GPKG)`` and ``qgis_io.gpkg.insert_qsos``, which skips
    duplicates (same ``dedup_key``) and writes the QSO points and their paths. A
    GeoPackage that may not be written fails the algorithm with what to check.
@@ -46,7 +48,7 @@ from qgis.core import (
 
 from ..core.adif import read_adi
 from ..core.i18n import current_language, is_serbian, tr, tr_noop
-from ..core.qso import Station, records_to_qsos
+from ..core.qso import Station, my_position, records_to_qsos
 from ..qgis_io import gpkg, layers
 from ..qgis_io.compat import FILE_BEHAVIOR_FILE, NUMBER_INTEGER, PARAM_FLAG_ADVANCED
 from .common import (
@@ -386,11 +388,18 @@ def _released(records: list[Any], grid: str) -> Iterator[Any]:
 
     With my locator ``grid`` set, a record without MY_GRIDSQUARE gets the mark
     ``gpkg.STATION_GRID_KEY`` (its ``my_gridsquare`` comes from the settings, not from
-    the log); it ends up in ``adif_extra``.
+    the log); it ends up in ``adif_extra``. A record whose MY_LAT/MY_LON give my position
+    (``core.qso.my_position``) gets no mark: its ``my_gridsquare`` is the locator of that
+    position, the start of its path.
     """
     for index in range(len(records)):
         record = records[index]
         records[index] = None
-        if grid and isinstance(record, dict) and not str(record.get("MY_GRIDSQUARE") or "").strip():
+        if (
+            grid
+            and isinstance(record, dict)
+            and not str(record.get("MY_GRIDSQUARE") or "").strip()
+            and my_position(record) is None
+        ):
             record[gpkg.STATION_GRID_KEY] = "Y"
         yield record

@@ -60,7 +60,7 @@ Radio amater uveze svoj ADIF log i za par minuta vidi sve svoje veze na mapi, sa
 | freq_mhz | real | |
 | rst_sent, rst_rcvd | text | |
 | gridsquare | text | lokator druge strane |
-| my_gridsquare | text | moj lokator iz zapisa (`MY_GRIDSQUARE`), inače iz podešavanja; grublji lokator iz zapisa (`KN04` uz `KN04ft` u podešavanjima) zamenjuje se onim iz podešavanja |
+| my_gridsquare | text | moj lokator iz zapisa (`MY_GRIDSQUARE`), inače lokator od 6 znakova iz `MY_LAT`/`MY_LON`, inače iz podešavanja; grublji lokator iz zapisa (`KN04` uz `KN04ft` u podešavanjima) zamenjuje se onim iz podešavanja |
 | dxcc | int | ADIF DXCC broj ako postoji |
 | country | text | |
 | cont | text | EU, AS, AF, NA, SA, OC, AN |
@@ -70,7 +70,7 @@ Radio amater uveze svoj ADIF log i za par minuta vidi sve svoje veze na mapi, sa
 | loc_source | text | `latlon`, `grid`, `cty` (preciznost pozicije) |
 | source | text | `adif:<fajl>`, `wsjtx` ili `manual` (ručni unos u HamQ dijalogu) |
 | dedup_key | text | UNIQUE: call + minut + band + vrsta rada za duplikate (`modes.dedup_mode`: FT4 kao `FT4` ili `MFSK`+`FT4` je ista veza, isto i SSB sa ili bez bočnog opsega `USB`/`LSB`, `PSK31` i `PSK`, `JT65B` i `JT65`) |
-| adif_extra | text | JSON sa ostalim ADIF poljima. `APP_HAMQ_STATION_GRID` = `Y` kada `my_gridsquare` nije bio u logu nego je pri uvozu uzet iz podešavanja; *Ponovo izračunaj* takve veze pomera na novi lokator |
+| adif_extra | text | JSON sa ostalim ADIF poljima. `APP_HAMQ_STATION_GRID` = `Y` kada ni `my_gridsquare` ni upotrebljivi `MY_LAT`/`MY_LON` nisu bili u logu, nego je lokator pri uvozu uzet iz podešavanja; *Ponovo izračunaj* takve veze pomera na novi lokator |
 
 **`qso_path`** (MultiLineString, EPSG:4326): `qso_fid`, `distance_km`, `bearing_deg`, `band`, `mode`. Geodetska linija na WGS84 elipsoidu (`QgsDistanceArea.geodesicLine`), presečena na antimeridijanu. `distance_km` i `bearing_deg` su vrednosti veze (sferne), pa se dužina linije koju QGIS meri na elipsoidu (`$length`) razlikuje od njih do oko 0,6 %. Okidač `qso_delete_paths` (`AFTER DELETE ON qso`) briše putanje obrisane veze, bez obzira na to koji program je briše.
 

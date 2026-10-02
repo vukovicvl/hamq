@@ -528,6 +528,9 @@ def test_tool_button_and_cursor(qgis_app):
 
 def test_host_addresses():
     assert QHostAddress(compat.HOST_ANY_IPV4).toString() == "0.0.0.0"
+    # the text form, computed by Qt (the plugin code never spells it out: Bandit B104)
+    assert compat.HOST_ANY_IPV4_TEXT == "0.0.0.0"
+    assert QHostAddress(compat.HOST_ANY_IPV4_TEXT) == QHostAddress(compat.HOST_ANY_IPV4)
     assert QHostAddress(compat.HOST_LOCALHOST).toString() == "127.0.0.1"
 
 

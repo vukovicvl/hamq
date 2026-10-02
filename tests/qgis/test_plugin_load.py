@@ -591,6 +591,12 @@ def test_plugin_metadata():
     assert meta["qgisMinimumVersion"] == "3.34"
     assert meta["supportsQt6"] == "True"
     assert os.path.isfile(os.path.join(plugin_module.PLUGIN_DIR, meta["icon"]))
+    assert meta["changelog"].startswith(meta["version"] + ": ")
+    # The plugin manager shows 'about': WSJT-X / JTDX and Hamlib are separate programs.
+    assert "separate programs" in meta["about"]
+    assert "rigctld" in meta["about"] and "rotctld" in meta["about"]
+    # 'category' is optional and only Raster, Vector, Database, Mesh or Web (QGIS docs).
+    assert meta.get("category", "Web") in ("Raster", "Vector", "Database", "Mesh", "Web")
 
 
 def test_provider_properties(loaded):

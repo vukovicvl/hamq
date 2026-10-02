@@ -211,7 +211,8 @@ class _Reader:
         end = self._pos + length
         if end > len(self._data):  # checked before slicing: a huge length allocates nothing
             raise _Truncated
-        raw = self._data[self._pos : end]
+        start = self._pos
+        raw = self._data[start:end]
         self._pos = end
         return _text(raw)
 

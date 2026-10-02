@@ -38,7 +38,9 @@ from typing import NamedTuple
 PLUGIN_DIR_NAME = "hamq"
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 
-#: Keys plugins.qgis.org requires, plus the ones HamQ always sets.
+#: Keys plugins.qgis.org requires, plus the ones HamQ always sets. Not ``category``: the
+#: QGIS documentation allows only Raster, Vector, Database, Mesh and Web there, and HamQ
+#: stays in the Plugins menu, the default without the key.
 REQUIRED_KEYS = (
     "name",
     "qgisMinimumVersion",
@@ -51,7 +53,6 @@ REQUIRED_KEYS = (
     "repository",
     "tracker",
     "homepage",
-    "category",
     "tags",
     "icon",
     "license",

@@ -226,6 +226,7 @@ def test_public_names():
         "Qso",
         "Station",
         "display_mode",
+        "my_position",
         "record_to_qso",
         "records_to_qsos",
     }
@@ -736,7 +737,7 @@ def test_lat_lon_beat_a_field_locator_without_a_warning(cty_db):
             {"MY_LAT": "N044 48.750", "MY_LON": "E020 27.672"},
             None,
             BEOGRAD,
-            None,
+            "KN04ft",  # the cell of MY_LAT / MY_LON (REL-01)
             id="my-latlon-without-grid",
         ),
     ],
@@ -883,6 +884,94 @@ def test_coarse_my_gridsquare_next_to_my_lat_lon_is_kept_as_logged():
     assert warnings == []
     assert_origin(q, BEOGRAD)
     assert q.my_gridsquare == "KN04"
+
+
+# MY_LAT / MY_LON of a portable QTH in Novi Sad: the centre of JN95wg
+NOVI_SAD_MY_LATLON = {"MY_LAT": "N045 16.250", "MY_LON": "E019 52.500"}
+
+
+def test_my_lat_lon_without_my_gridsquare_name_their_own_cell():
+    # REL-01: my_gridsquare was the station locator (KN04ft) while the path started at
+    # MY_LAT / MY_LON in Novi Sad; the column now names the cell the path starts in
+    q, warnings = one({"CALL": "W1XYZ", "GRIDSQUARE": "FN42", **NOVI_SAD_MY_LATLON})
+    assert warnings == []
+    assert_origin(q, JN95WG)
+    assert q.my_gridsquare == "JN95wg"
+    assert maidenhead.to_latlon(q.my_gridsquare) == pytest.approx((q.my_lat, q.my_lon))
+    assert json.loads(q.adif_extra) == NOVI_SAD_MY_LATLON
+
+
+def test_my_lat_lon_in_a_log_name_their_own_cell(cty_db):
+    records = [{**record, **NOVI_SAD_MY_LATLON} for record in read_records("wsjtx_log.adi")]
+    for record in records:
+        record.pop("MY_GRIDSQUARE", None)
+    qsos, _ = records_to_qsos(records, station=HOME, cty=cty_db)
+    assert len(qsos) == 6
+    assert all(q.my_gridsquare == "JN95wg" for q in qsos)
+    assert all((q.my_lat, q.my_lon) == pytest.approx(JN95WG) for q in qsos)
+
+
+@pytest.mark.parametrize(
+    ("lat", "lon", "locator"),
+    [
+        pytest.param("N044 48.750", "E020 27.672", "KN04ft", id="beograd"),
+        pytest.param("S033 52.128", "E151 12.558", "QF56od", id="sydney"),
+        pytest.param("N090 00.000", "E180 00.000", "RR99xx", id="north-east-corner"),
+        pytest.param("S090 00.000", "W180 00.000", "AA00aa", id="south-west-corner"),
+        pytest.param("N000 00.000", "W000 00.001", "IJ90xa", id="next-to-0-0"),
+    ],
+)
+def test_my_gridsquare_from_my_lat_lon_is_six_characters(lat, lon, locator):
+    q, _ = one({"CALL": "W1XYZ", "MY_LAT": lat, "MY_LON": lon}, station=None)
+    assert q.my_gridsquare == locator
+    assert q.my_gridsquare == maidenhead.to_locator(q.my_lat, q.my_lon, 6)
+
+
+@pytest.mark.parametrize(
+    ("record", "my_grid"),
+    [
+        pytest.param({"MY_LAT": "N000 00.000", "MY_LON": "E000 00.000"}, "KN04ft", id="0/0"),
+        pytest.param({"MY_LAT": "N045 16.250"}, "KN04ft", id="lat-only"),
+        pytest.param({"MY_LAT": "N045 16.250", "MY_LON": "19.875"}, "KN04ft", id="bad-lon"),
+        pytest.param({**NOVI_SAD_MY_LATLON, "MY_GRIDSQUARE": "KN04"}, "KN04", id="logged-grid"),
+        pytest.param({**NOVI_SAD_MY_LATLON, "MY_GRIDSQUARE": "KN4"}, "KN4", id="invalid-grid"),
+    ],
+)
+def test_unusable_my_lat_my_lon_or_a_logged_my_gridsquare(record, my_grid):
+    q, _ = one({"CALL": "W1XYZ", "GRIDSQUARE": "FN42", **record})
+    assert q.my_gridsquare == my_grid
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        pytest.param(NOVI_SAD_MY_LATLON, JN95WG, id="valid"),
+        pytest.param({"my_lat": " N045 16.250 ", "My_Lon": "E019 52.500"}, JN95WG, id="case"),
+        pytest.param({"MY_LAT": "N044 48.750", "MY_LON": "E020 27.672"}, BEOGRAD, id="beograd"),
+        pytest.param({}, None, id="missing"),
+        pytest.param({"MY_LAT": "N045 16.250"}, None, id="lat-only"),
+        pytest.param({"MY_LAT": "", "MY_LON": "E019 52.500"}, None, id="empty-lat"),
+        pytest.param({"MY_LAT": "N000 00.000", "MY_LON": "E000 00.000"}, None, id="0/0"),
+        pytest.param({"MY_LAT": "E045 16.250", "MY_LON": "N019 52.500"}, None, id="swapped"),
+        pytest.param({"MY_LAT": "N091 00.000", "MY_LON": "E019 52.500"}, None, id="range"),
+        pytest.param({"LAT": "N045 16.250", "LON": "E019 52.500"}, None, id="lat-lon"),
+        pytest.param(None, None, id="none"),
+        pytest.param(["MY_LAT"], None, id="not-a-mapping"),
+    ],
+)
+def test_my_position(record, expected):
+    position = qso.my_position(record)
+    if expected is None:
+        assert position is None
+    else:
+        assert position == pytest.approx(expected)
+
+
+def test_my_position_matches_the_origin_of_record_to_qso():
+    for record in (NOVI_SAD_MY_LATLON, {"MY_LAT": "N000 00.000", "MY_LON": "E000 00.000"}, {}):
+        q, _ = one({"CALL": "W1XYZ", "GRIDSQUARE": "FN42", **record}, station=None)
+        position = qso.my_position(record)
+        assert (q.my_lat, q.my_lon) == (position or (None, None))
 
 
 @pytest.mark.parametrize(

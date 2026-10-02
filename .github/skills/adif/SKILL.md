@@ -164,8 +164,8 @@ unknown, with a warning.
 4. none -> keep the QSO without geometry, count in warnings
 
 Path origin: MY_LAT/MY_LON > MY_GRIDSQUARE > my locator in the settings > none (no
-distance, bearing or path). `my_gridsquare` = the record's value, else the settings
-locator.
+distance, bearing or path). `my_gridsquare` = the record's value, else the 6-character
+locator of a usable MY_LAT/MY_LON, else the settings locator.
 
 ## Dedup key
 
@@ -192,9 +192,9 @@ Importing a file again adds nothing, and the LoTW confirmations in `lotw.adi` (F
   file size in memory) and one with more than `RECORDS_PER_MB = 10_000` `<EOR>` tags
   per MB of that limit.
 - `source` is `adif:<file name>`. With my locator set, a record without MY_GRIDSQUARE
-  gets `APP_HAMQ_STATION_GRID` = `Y` in `adif_extra` (`gpkg.STATION_GRID_KEY`): its
-  `my_gridsquare` came from the settings, so *Recalculate* moves it to a changed
-  locator. Live WSJT-X and manual QSOs get no mark.
+  and without a usable MY_LAT/MY_LON gets `APP_HAMQ_STATION_GRID` = `Y` in `adif_extra`
+  (`gpkg.STATION_GRID_KEY`): its `my_gridsquare` came from the settings, so
+  *Recalculate* moves it to a changed locator. Live WSJT-X and manual QSOs get no mark.
 
 ## Test fixtures (`tests/fixtures/adif`, described in its README)
 

@@ -58,6 +58,7 @@ Usage (main thread)::
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import numbers
 import time
@@ -186,10 +187,9 @@ def _guarded(method: _F) -> _F:
         try:
             return method(self, *args, **kwargs)
         except Exception:
-            try:
+            # When the log itself fails (QGIS shutting down) there is nothing left to do.
+            with contextlib.suppress(Exception):
                 _log(tr(_MSG_UNEXPECTED).format(error=traceback.format_exc()), MSG_CRITICAL)
-            except Exception:  # the log itself failed (QGIS shutting down): nothing to do
-                pass
             return None
 
     return wrapper  # type: ignore[return-value]

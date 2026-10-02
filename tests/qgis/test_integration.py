@@ -422,6 +422,22 @@ def test_live_qso_gets_dxcc_data_from_cty(env, load_plugin):
     assert row["distance_km"] > 10000  # to the centre of the entity
 
 
+def test_live_qso_with_my_lat_lon_names_their_locator(env, load_plugin):
+    """REL-01: a live QSO with MY_LAT/MY_LON and no MY_GRIDSQUARE stores the locator of
+    that position (Novi Sad, JN95wg), where its path starts, not my locator (KN04ft)."""
+    plugin = load_plugin()
+    adif = LIVE_ADIF.replace(
+        "<my_gridsquare:6>KN04ft ", "<my_lat:11>N045 16.250 <my_lon:11>E019 52.500 "
+    )
+    assert plugin.controller.handle_logged_adif("WSJT-X", adif) == 1
+    row = gpkg.read_qso_rows(env.settings.gpkg_path)[0]
+    assert row["my_gridsquare"] == "JN95wg"
+    assert gpkg.STATION_GRID_KEY not in row["adif_extra"]
+    assert row["distance_km"] == pytest.approx(
+        geo.distance_km(*maidenhead.to_latlon("JN95wg"), *maidenhead.to_latlon("QF56"))
+    )
+
+
 def test_unreadable_wsjtx_qso_is_reported(env, load_plugin, iface):
     plugin = load_plugin()
     controller = plugin.controller
